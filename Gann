@@ -1,0 +1,1808 @@
+//@version=6
+indicator("Combined GANN + BTST Strategy with Market Structure & ATR Filter", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SYSTEM CONTROL
+// ═════════════════════════════════════════════════════════════════════════════
+
+g_system = "🎛️ System Control"
+enable_gann = input.bool(true, "Enable GANN System", group=g_system, tooltip="Enable/disable GANN intraday trading system")
+enable_btst = input.bool(true, "Enable BTST System", group=g_system, tooltip="Enable/disable BTST overnight trading system")
+trade_priority = input.string("Independent (Both Allowed)", "Trade Priority", 
+     options=["GANN Priority", "BTST Priority", "First Come First Serve", "Independent (Both Allowed)"], 
+     group=g_system, 
+     tooltip="GANN Priority: BTST blocked if GANN active\nBTST Priority: GANN blocked if BTST active\nFirst Come: Second entry blocked\nIndependent: Both can trade simultaneously")
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MARKET STRUCTURE SETTINGS
+// ═════════════════════════════════════════════════════════════════════════════
+
+g_market_structure = "📊 Market Structure Filter (GANN Only)"
+enable_market_structure = input.bool(true, "Enable Market Structure Filter", group=g_market_structure, 
+     tooltip="Only take GANN trades aligned with market structure:\n• Bullish: Only BUY (HH/HL pattern)\n• Bearish: Only SELL (LL/LH pattern)")
+ms_timeframe = input.timeframe("", "Market Structure Timeframe", group=g_market_structure,
+     tooltip="Choose timeframe for MS calculation:\n• Empty = Current chart timeframe\n• 15 = 15 minutes\n• 60 = 1 hour\n• 240 = 4 hours\n• D = Daily\n• W = Weekly")
+ms_left_bars = input.int(5, "Left Bars", minval=1, group=g_market_structure)
+ms_right_bars = input.int(5, "Right Bars", minval=1, group=g_market_structure)
+show_ms_labels = input.bool(true, "Show HH/HL/LH/LL Labels", group=g_market_structure)
+show_sr_lines = input.bool(true, "Show Support/Resistance Lines", group=g_market_structure)
+ms_sup_color = input.color(color.new(color.lime, 0), "Support Color", group=g_market_structure)
+ms_res_color = input.color(color.new(color.red, 0), "Resistance Color", group=g_market_structure)
+show_ms_info = input.bool(true, "Show MS Info Box", group=g_market_structure,
+     tooltip="Display market structure trend info on chart")
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MARKET STRUCTURE CALCULATION
+// ═════════════════════════════════════════════════════════════════════════════
+
+var int ms_hl = na
+var float ms_zz = na
+var bool ms_hh = false
+var bool ms_ll = false
+var bool ms_hl_pattern = false
+var bool ms_lh = false
+var float ms_res = na
+var float ms_sup = na
+var int ms_trend = na
+
+[tf_high, tf_low, tf_close] = request.security(syminfo.tickerid, 
+     ms_timeframe == "" ? timeframe.period : ms_timeframe, 
+     [high, low, close], 
+     lookahead=barmerge.lookahead_off)
+
+float ph = ta.pivothigh(tf_high, ms_left_bars, ms_right_bars)
+float pl = ta.pivotlow(tf_low, ms_left_bars, ms_right_bars)
+
+if not na(ph)
+    ms_hl := 1
+    ms_zz := ph
+else if not na(pl)
+    ms_hl := -1
+    ms_zz := pl
+
+if not na(pl) and ms_hl == -1
+    if nz(ms_hl[1]) == -1 and pl > nz(ms_zz[1])
+        ms_zz := na
+
+if not na(ph) and ms_hl == 1
+    if nz(ms_hl[1]) == 1 and ph < nz(ms_zz[1])
+        ms_zz := na
+
+if ms_hl == -1 and nz(ms_hl[1]) == 1
+    int bars_back = 0
+    for i = 1 to 500
+        if not na(ms_hl[i])
+            bars_back := i
+            break
+    
+    if bars_back > 0
+        float prev_zz = nz(ms_zz[bars_back])
+        if ms_zz > prev_zz
+            ms_hl := na
+
+if ms_hl == 1 and nz(ms_hl[1]) == -1
+    int bars_back = 0
+    for i = 1 to 500
+        if not na(ms_hl[i])
+            bars_back := i
+            break
+    
+    if bars_back > 0
+        float prev_zz = nz(ms_zz[bars_back])
+        if ms_zz < prev_zz
+            ms_hl := na
+
+ms_zz := na(ms_hl) ? na : ms_zz
+
+float loc1 = na, float loc2 = na, float loc3 = na, float loc4 = na
+
+if not na(ms_hl)
+    int ehl = ms_hl == 1 ? -1 : 1
+    int xx = 0
+    
+    for x = 1 to 1000
+        if not na(ms_hl[x]) and ms_hl[x] == ehl and not na(ms_zz[x])
+            loc1 := ms_zz[x]
+            xx := x + 1
+            break
+    
+    ehl := ms_hl
+    for x = xx to 1000
+        if not na(ms_hl[x]) and ms_hl[x] == ehl and not na(ms_zz[x])
+            loc2 := ms_zz[x]
+            xx := x + 1
+            break
+    
+    ehl := ms_hl == 1 ? -1 : 1
+    for x = xx to 1000
+        if not na(ms_hl[x]) and ms_hl[x] == ehl and not na(ms_zz[x])
+            loc3 := ms_zz[x]
+            xx := x + 1
+            break
+    
+    ehl := ms_hl
+    for x = xx to 1000
+        if not na(ms_hl[x]) and ms_hl[x] == ehl and not na(ms_zz[x])
+            loc4 := ms_zz[x]
+            break
+
+float a = na, float b = na, float c = na, float d = na, float e = na
+if not na(ms_hl)
+    a := ms_zz
+    b := loc1
+    c := loc2
+    d := loc3
+    e := loc4
+
+ms_hh := false
+ms_ll := false
+ms_hl_pattern := false
+ms_lh := false
+
+if not na(ms_zz)
+    if not na(a) and not na(b) and not na(c) and not na(d)
+        ms_hh := (a > b and a > c and c > b and c > d)
+        ms_ll := (a < b and a < c and c < b and c < d)
+    
+    if not na(a) and not na(b) and not na(c) and not na(d) and not na(e)
+        ms_hl_pattern := ((a >= c and (b > c and b > d and d > c and d > e)) or (a < b and a > c and b < d))
+        ms_lh := ((a <= c and (b < c and b < d and d < c and d < e)) or (a > b and a < c and b > d))
+
+if ms_lh
+    ms_res := ms_zz
+if ms_hl_pattern
+    ms_sup := ms_zz
+
+if not na(ms_res) and close > ms_res
+    ms_trend := 1
+else if not na(ms_sup) and close < ms_sup
+    ms_trend := -1
+
+if (ms_trend == 1 and ms_hh) or (ms_trend == -1 and ms_lh)
+    ms_res := ms_zz
+if (ms_trend == 1 and ms_hl_pattern) or (ms_trend == -1 and ms_ll)
+    ms_sup := ms_zz
+
+bool ms_rechange = ms_res != ms_res[1]
+bool ms_suchange = ms_sup != ms_sup[1]
+
+if show_ms_labels
+    if ms_hl_pattern and ms_hl_pattern != ms_hl_pattern[1]
+        label.new(bar_index, low, "HL\n[" + (ms_timeframe == "" ? timeframe.period : ms_timeframe) + "]", 
+                  style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.black, size=size.tiny)
+    if ms_hh and ms_hh != ms_hh[1]
+        label.new(bar_index, high, "HH\n[" + (ms_timeframe == "" ? timeframe.period : ms_timeframe) + "]", 
+                  style=label.style_label_down, color=color.new(color.lime, 0), textcolor=color.black, size=size.tiny)
+    if ms_ll and ms_ll != ms_ll[1]
+        label.new(bar_index, low, "LL\n[" + (ms_timeframe == "" ? timeframe.period : ms_timeframe) + "]", 
+                  style=label.style_label_up, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+    if ms_lh and ms_lh != ms_lh[1]
+        label.new(bar_index, high, "LH\n[" + (ms_timeframe == "" ? timeframe.period : ms_timeframe) + "]", 
+                  style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.tiny)
+
+var line ms_resline = na
+var line ms_supline = na
+
+if show_sr_lines
+    if ms_rechange and not na(ms_res)
+        if not na(ms_resline)
+            line.set_x2(ms_resline, bar_index)
+            line.set_extend(ms_resline, extend.none)
+        ms_resline := line.new(bar_index, ms_res, bar_index, ms_res, color=ms_res_color, extend=extend.right, style=line.style_dotted, width=2)
+    
+    if ms_suchange and not na(ms_sup)
+        if not na(ms_supline)
+            line.set_x2(ms_supline, bar_index)
+            line.set_extend(ms_supline, extend.none)
+        ms_supline := line.new(bar_index, ms_sup, bar_index, ms_sup, color=ms_sup_color, extend=extend.right, style=line.style_dotted, width=2)
+
+plot(show_sr_lines and not na(ms_res) ? ms_res : na, "MS Resistance", color=color.new(ms_res_color, 70), linewidth=1, style=plot.style_linebr)
+plot(show_sr_lines and not na(ms_sup) ? ms_sup : na, "MS Support", color=color.new(ms_sup_color, 70), linewidth=1, style=plot.style_linebr)
+
+bool ms_allows_buy = not enable_market_structure or (not na(ms_trend) and ms_trend == 1)
+bool ms_allows_sell = not enable_market_structure or (not na(ms_trend) and ms_trend == -1)
+
+if show_ms_info and barstate.islast
+    var ms_info_table = table.new(position.top_center, 4, 2, bgcolor=color.new(color.black, 10), border_width=2)
+    
+    string tf_display = ms_timeframe == "" ? timeframe.period : ms_timeframe
+    string trend_text = na(ms_trend) ? "NEUTRAL" : (ms_trend == 1 ? "BULLISH" : "BEARISH")
+    color trend_color = na(ms_trend) ? color.new(color.gray, 0) : (ms_trend == 1 ? color.new(color.green, 0) : color.new(color.red, 0))
+    
+    table.cell(ms_info_table, 0, 0, "Market Structure", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    table.cell(ms_info_table, 1, 0, "Timeframe", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    table.cell(ms_info_table, 2, 0, "Trend", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    table.cell(ms_info_table, 3, 0, "Status", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    
+    table.cell(ms_info_table, 0, 1, enable_market_structure ? "ACTIVE" : "INACTIVE", 
+               text_color=color.white, text_size=size.normal, 
+               bgcolor=enable_market_structure ? color.new(color.green, 70) : color.new(color.gray, 70))
+    table.cell(ms_info_table, 1, 1, tf_display, text_color=color.white, text_size=size.normal, bgcolor=color.new(color.navy, 70))
+    table.cell(ms_info_table, 2, 1, trend_text, text_color=color.white, text_size=size.normal, bgcolor=trend_color)
+    
+    string gann_status = ""
+    if enable_market_structure
+        if ms_trend == 1
+            gann_status := "BUY ONLY ✓"
+        else if ms_trend == -1
+            gann_status := "SELL ONLY ✓"
+        else
+            gann_status := "WAITING..."
+    else
+        gann_status := "ALL TRADES"
+    
+    table.cell(ms_info_table, 3, 1, gann_status, text_color=color.white, text_size=size.small, bgcolor=color.new(color.purple, 70))
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GANN SYSTEM SETTINGS
+// ═════════════════════════════════════════════════════════════════════════════
+
+g_gann_calc = "📐 GANN: Calculation Settings"
+gann_Cal = input.string(title="Calculate Buy/Sell Levels based on:", defval='Todays Open', 
+     options=['Todays Open', 'Previous Days High','Previous Days Low','Previous Days Close'], group=g_gann_calc)
+
+g_gann_atr = "📏 GANN: ATR Confluence Filter"
+gann_enable_atr_filter = input.bool(true, "Enable ATR Filter", group=g_gann_atr,
+     tooltip="Requires minimum ATR for entry to filter low volatility periods")
+gann_atr_length = input.int(14, "ATR Length", minval=1, maxval=200, group=g_gann_atr)
+gann_min_atr_multiplier = input.float(1.0, "Minimum ATR Multiplier", minval=0.1, maxval=5.0, step=0.1, group=g_gann_atr,
+     tooltip="Entry requires: Current ATR >= (Average ATR × Multiplier)\nHigher = Only trades in high volatility\nLower = More trades")
+gann_show_atr = input.bool(false, "Show ATR Indicator", group=g_gann_atr)
+gann_show_atr_threshold = input.bool(false, "Show ATR Threshold Line", group=g_gann_atr)
+
+g_gann_ema = "📊 GANN: EMA Confluence Settings"
+gann_enable_ema_filter = input.bool(false, "Enable EMA Confluence Filter", group=g_gann_ema, 
+     tooltip="Only take trades when EMA confirms direction:\n• BUY: EMA must be BELOW Buy Entry\n• SELL: EMA must be ABOVE Sell Entry")
+gann_ema_length = input.int(20, "EMA Length", minval=1, maxval=500, group=g_gann_ema)
+gann_show_ema = input.bool(false, "Show EMA on Chart", group=g_gann_ema)
+gann_ema_color = input.color(color.new(color.yellow, 0), "EMA Color", group=g_gann_ema)
+
+g_gann_cpr = "📊 GANN: CPR Confluence Settings"
+gann_enable_cpr_filter = input.bool(false, "Enable CPR Confluence Filter", group=g_gann_cpr, 
+     tooltip="Only take trades when CPR confirms direction:\n• BUY: Price must be above TC and BC\n• SELL: Price must be below TC and BC")
+gann_cpr_use_previous_day = input.bool(true, "Use Previous Day for CPR", group=g_gann_cpr,
+     tooltip="Use previous day's H/L/C for CPR calculation (recommended for next-day trading)")
+
+g_gann_detection = "🎯 GANN: TP/SL Detection Settings"
+gann_tp_detection_method = input.string("Wick Touch", "TP Detection Method", options=["Wick Touch", "Candle Close"], group=g_gann_detection)
+gann_sl_detection_method = input.string("Candle Close", "Gann SL Detection Method", options=["Wick Touch", "Candle Close"], group=g_gann_detection)
+gann_tsl_detection_method = input.string("Candle Close", "Trailing SL Detection Method", options=["Wick Touch", "Candle Close"], group=g_gann_detection)
+
+g_gann_points = "📏 GANN: Points Calculation Settings"
+gann_tp_points_calculation = input.string("Entry Close to Exit Close", "TP Points Calculation Method", 
+     options=["Entry Close to Exit Close", "Entry Close to Exit Wick", "Entry Close to Exit Level", "Entry Level to Exit Level"], 
+     group=g_gann_points)
+gann_sl_points_calculation = input.string("Entry Close to Exit Close", "Gann SL Points Calculation Method", 
+     options=["Entry Close to Exit Close", "Entry Close to Exit Wick", "Entry Close to Exit Level", "Entry Level to Exit Level"], 
+     group=g_gann_points)
+gann_tsl_points_calculation = input.string("Entry Close to Exit Close", "Trailing SL Points Calculation Method", 
+     options=["Entry Close to Exit Close", "Entry Close to Exit Wick", "Entry Close to Exit Level", "Entry Level to Exit Level"], 
+     group=g_gann_points)
+
+g_gann_exit = "🚪 GANN: Exit Settings"
+gann_exit_tp_target = input.string("TP3", "Exit at Target", options=["TP1", "TP2", "TP3", "TP4", "Trailing SL"], group=g_gann_exit)
+gann_enable_trailing_buffer = input.bool(true, "Enable Trailing SL Buffer", group=g_gann_exit)
+gann_trailing_sl_atr_multiplier = input.float(0.8, "Trailing SL Buffer (× ATR)", minval=0, maxval=3.0, step=0.1, group=g_gann_exit)
+gann_enable_eod_exit = input.bool(true, "Enable Weekly EOD Exit", group=g_gann_exit)
+gann_eod_day_of_week = input.string("Wednesday", "EOD Exit Day", options=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], group=g_gann_exit)
+gann_eod_hour = input.int(15,'Weekly EOD Hour',minval=0,maxval=23, group=g_gann_exit)
+gann_eod_minute = input.int(15,"Weekly EOD Minute",minval=0,maxval=59, group=g_gann_exit)
+
+g_gann_style = "🎨 GANN: Style Settings"
+gann_ShowBlvl = input.bool(false, "Show Buy Levels on Chart", group=g_gann_style)
+gann_ShowSlvl = input.bool(false, "Show Sell Levels on Chart", group=g_gann_style)
+gann_BlvlColor = input.color(color.new(#78fa04,45),"Color for Buy Levels", group=g_gann_style)
+gann_SlvlColor = input.color(color.new(#fa2f04,45),"Color for Sell Levels", group=g_gann_style)
+gann_TPColor1 = input.color(color.new(#20ffae, 0),"TP1 Color", group=g_gann_style)
+gann_TPColor2 = input.color(color.new(#03bcfc, 0),"TP2 Color", group=g_gann_style)
+gann_TPColor3 = input.color(color.new(#ffd600, 0),"TP3 Color", group=g_gann_style)
+gann_TPColor4 = input.color(color.new(#b388ff, 0),"TP4 Color", group=g_gann_style)
+gann_SLColor = input.color(color.new(#ff1744, 0),"SL Color", group=g_gann_style)
+gann_EntryBuyColor = input.color(color.new(#00e676, 0),"Buy Entry", group=g_gann_style)
+gann_EntrySellColor = input.color(color.new(#f44336, 0),"Sell Entry", group=g_gann_style)
+gann_label_atr_mult = input.float(1.5, "Label vertical spacing (ATR multiplier)", minval=0.5, maxval=6.0, step=0.1, group=g_gann_style)
+gann_exit_label_extra = input.float(0.3, "Extra ATR for exit labels", minval=0.0, maxval=3.0, step=0.1, group=g_gann_style)
+
+g_gann_perf = "📊 GANN: Performance Settings"
+gann_option_multiplier = input.float(0.6, "Option Multiplier", minval=0.0, maxval=10.0, step=0.1, group=g_gann_perf)
+gann_lot_size = input.float(300, "Lot Size", minval=1, maxval=100000, step=1, group=g_gann_perf)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BTST SYSTEM SETTINGS
+// ═════════════════════════════════════════════════════════════════════════════
+
+g_btst_confluence = "🔗 BTST: Confluence Settings"
+btst_enable_vwap_confluence = input.bool(true, "Enable VWAP Confluence Filter", group=g_btst_confluence, 
+     tooltip="Gap Up requires price above VWAP, Gap Down requires price below VWAP")
+btst_enable_ema_confluence = input.bool(true, "Enable EMA Confluence Filter", group=g_btst_confluence, 
+     tooltip="Gap Up requires price above EMA, Gap Down requires price below EMA")
+btst_ema_length = input.int(50, "EMA Length", minval=1, maxval=200, group=g_btst_confluence)
+btst_enable_volume_confluence = input.bool(true, "Enable Volume Confluence Filter", group=g_btst_confluence, 
+     tooltip="Requires volume to be above average by specified multiplier")
+btst_volume_length = input.int(18, "Volume Average Length", minval=1, maxval=200, group=g_btst_confluence)
+btst_volume_multiplier = input.float(1.3, "Volume Multiplier", minval=0.1, maxval=10.0, step=0.1, group=g_btst_confluence)
+
+g_btst_trading = "💰 BTST: Trading Settings"
+btst_target_percent = input.float(1.8, "Target %", minval=0.1, maxval=20.0, step=0.1, group=g_btst_trading)
+btst_sl_percent = input.float(1.5, "Stop Loss %", minval=0.1, maxval=20.0, step=0.1, group=g_btst_trading)
+
+g_btst_perf = "📊 BTST: Performance Settings"
+btst_option_multiplier = input.float(0.6, "Option Points Multiplier", minval=0.1, maxval=2.0, step=0.1, group=g_btst_perf)
+btst_lot_size = input.float(75, "Lot Size / PNL Multiplier", minval=1, maxval=10000, step=25, group=g_btst_perf)
+
+g_btst_style = "🎨 BTST: Style Settings"
+btst_show_vwap = input.bool(false, "Show VWAP on Chart", group=g_btst_style)
+btst_show_ema = input.bool(false, "Show EMA on Chart", group=g_btst_style)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COMBINED PERFORMANCE TABLE SETTINGS
+// ═════════════════════════════════════════════════════════════════════════════
+
+g_cmb_table = "📋 Combined Performance Table"
+cmb_show_performance_table = input.bool(true, "Show Performance Table", group=g_cmb_table)
+cmb_performance_months = input.int(12, "Performance History (Months)", minval=1, maxval=240, group=g_cmb_table)
+cmb_table_position = input.string("top_right", "Table Position", 
+     options=["top_left", "top_center", "top_right", "middle_left", "middle_center", "middle_right", 
+              "bottom_left", "bottom_center", "bottom_right"], group=g_cmb_table)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SHARED CALCULATIONS
+// ═════════════════════════════════════════════════════════════════════════════
+
+atr14 = ta.atr(14)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GANN SYSTEM - CALCULATIONS
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ATR Calculations
+gann_atr_value = ta.atr(gann_atr_length)
+gann_atr_avg = ta.sma(gann_atr_value, 20)
+gann_atr_threshold = gann_atr_avg * gann_min_atr_multiplier
+
+// Plot ATR if enabled
+plot(gann_show_atr ? gann_atr_value : na, "Current ATR", color=color.new(color.blue, 0), linewidth=2)
+plot(gann_show_atr_threshold ? gann_atr_threshold : na, "ATR Threshold", color=color.new(color.orange, 0), linewidth=1, style=plot.style_circles)
+
+// EMA Calculations
+gann_ema_value = ta.ema(close, gann_ema_length)
+plot(gann_show_ema and enable_gann ? gann_ema_value : na, color=gann_ema_color, linewidth=2, title="GANN EMA")
+
+gann_TDO = request.security(syminfo.tickerid, 'D', open, lookahead=barmerge.lookahead_on)
+gann_PDH = request.security(syminfo.tickerid, 'D', high[1], lookahead=barmerge.lookahead_on)
+gann_PDL = request.security(syminfo.tickerid, 'D', low[1], lookahead=barmerge.lookahead_on)
+gann_PDC = request.security(syminfo.tickerid, 'D', close[1], lookahead=barmerge.lookahead_on)
+
+float gann_sqCal = na
+if gann_Cal == 'Todays Open'
+    gann_sqCal := math.sqrt(gann_TDO)
+else if gann_Cal == 'Previous Days High'
+    gann_sqCal := math.sqrt(gann_PDH)
+else if gann_Cal == 'Previous Days Low'
+    gann_sqCal := math.sqrt(gann_PDL)
+else if gann_Cal == 'Previous Days Close'
+    gann_sqCal := math.sqrt(gann_PDC)
+
+
+// 50% INCREASE - All levels spread wider by 50%
+gann_Bsl = (gann_sqCal - 0.09375) * (gann_sqCal - 0.09375)   // 0.0625 × 1.5
+gann_Bat = (gann_sqCal + 0.1875) * (gann_sqCal + 0.1875)     // 0.125 × 1.5
+gann_Bt1 = (gann_sqCal + 0.375) * (gann_sqCal + 0.375)       // 0.25 × 1.5
+gann_Bt2 = (gann_sqCal + 0.75) * (gann_sqCal + 0.75)         // 0.5 × 1.5
+gann_Bt3 = (gann_sqCal + 1.125) * (gann_sqCal + 1.125)       // 0.75 × 1.5
+gann_Bt4 = (gann_sqCal + 1.5) * (gann_sqCal + 1.5)           // 1.0 × 1.5
+
+gann_Ssl = (gann_sqCal + 0.09375) * (gann_sqCal + 0.09375)
+gann_Sat = (gann_sqCal - 0.1875) * (gann_sqCal - 0.1875)
+gann_St1 = (gann_sqCal - 0.375) * (gann_sqCal - 0.375)
+gann_St2 = (gann_sqCal - 0.75) * (gann_sqCal - 0.75)
+gann_St3 = (gann_sqCal - 1.125) * (gann_sqCal - 1.125)
+gann_St4 = (gann_sqCal - 1.5) * (gann_sqCal - 1.5)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GANN SYSTEM - CPR CALCULATIONS
+// ═════════════════════════════════════════════════════════════════════════════
+
+float cpr_high = request.security(syminfo.tickerid, 'D', gann_cpr_use_previous_day ? high[1] : high, lookahead=barmerge.lookahead_on)
+float cpr_low = request.security(syminfo.tickerid, 'D', gann_cpr_use_previous_day ? low[1] : low, lookahead=barmerge.lookahead_on)
+float cpr_close = request.security(syminfo.tickerid, 'D', gann_cpr_use_previous_day ? close[1] : close, lookahead=barmerge.lookahead_on)
+
+float cpr_pivot = (cpr_high + cpr_low + cpr_close) / 3
+float cpr_bc = (cpr_high + cpr_low) / 2
+float cpr_tc = 2 * cpr_pivot - cpr_bc
+
+bool gann_cpr_confirms_buy = not gann_enable_cpr_filter or (close > cpr_tc and close > cpr_bc)
+bool gann_cpr_confirms_sell = not gann_enable_cpr_filter or (close < cpr_tc and close < cpr_bc)
+
+bool gann_ema_confirms_buy = not gann_enable_ema_filter or (gann_ema_value < gann_Bat)
+bool gann_ema_confirms_sell = not gann_enable_ema_filter or (gann_ema_value > gann_Sat)
+
+// ATR Confluence Check
+bool gann_atr_confirms = not gann_enable_atr_filter or (gann_atr_value >= gann_atr_threshold)
+
+// Entry signals with all confluence filters
+gann_buy_signal = ta.crossover(close, gann_Bat) and gann_ema_confirms_buy and gann_cpr_confirms_buy and ms_allows_buy and gann_atr_confirms
+gann_sell_signal = ta.crossunder(close, gann_Sat) and gann_ema_confirms_sell and gann_cpr_confirms_sell and ms_allows_sell and gann_atr_confirms
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GANN SYSTEM - TRADE STATE VARIABLES
+// ═════════════════════════════════════════════════════════════════════════════
+
+var bool gann_TRADE_ACTIVE = false
+var int gann_TRADE_DIR = 0
+var float gann_ENTRY_PRICE = na
+var float gann_SL_PRICE = na
+var float gann_TP_LEVEL1 = na
+var float gann_TP_LEVEL2 = na
+var float gann_TP_LEVEL3 = na
+var float gann_TP_LEVEL4 = na
+var float gann_EXIT_PRICE = na
+var int gann_ENTRY_BAR = na
+var int gann_ENTRY_TIME = na
+var float gann_ENTRY_CLOSE_PRICE = na
+
+var float gann_CURRENT_SL = na
+var int gann_HIGHEST_TP_REACHED = 0
+var bool gann_IS_TRAILING_ACTIVE = false
+
+var bool gann_ALERT_BUY_FIRED = false
+var bool gann_ALERT_SELL_FIRED = false
+var bool gann_ALERT_TP1_FIRED = false
+var bool gann_ALERT_TP2_FIRED = false
+var bool gann_ALERT_TP3_FIRED = false
+var bool gann_ALERT_TP4_FIRED = false
+var bool gann_ALERT_SL_FIRED = false
+var bool gann_ALERT_TSL_FIRED = false
+
+var array<int> gann_trade_months = array.new_int()
+var array<int> gann_trade_years = array.new_int()
+var array<bool> gann_trade_was_tp = array.new_bool()
+var array<float> gann_trade_points = array.new_float()
+var array<int> gann_trade_duration_days = array.new_int()
+var array<int> gann_trade_direction = array.new_int()
+var array<string> gann_trade_exit_type = array.new_string()
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BTST SYSTEM - CALCULATIONS
+// ═════════════════════════════════════════════════════════════════════════════
+
+float btst_vwap_value = ta.vwap(close)
+float btst_ema_value = ta.ema(close, btst_ema_length)
+float btst_avg_volume = ta.sma(volume, btst_volume_length)
+float btst_volume_threshold = btst_avg_volume * btst_volume_multiplier
+
+plot(btst_show_vwap and enable_btst ? btst_vwap_value : na, "BTST VWAP", color=color.new(color.orange, 0), linewidth=2)
+plot(btst_show_ema and enable_btst ? btst_ema_value : na, "BTST EMA", color=color.new(color.blue, 0), linewidth=2)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BTST SYSTEM - TRADE STATE VARIABLES
+// ═════════════════════════════════════════════════════════════════════════════
+
+var bool btst_in_trade = false
+var string btst_current_trade_type = ""
+var float btst_entry_price = 0.0
+var float btst_tp_price = 0.0
+var float btst_sl_price = 0.0
+var int btst_entry_bar = 0
+var int btst_entry_time = 0
+var line btst_tp_line = na
+var line btst_sl_line = na
+var label btst_tp_label = na
+var label btst_sl_label = na
+
+var array<int> btst_trade_months = array.new_int()
+var array<int> btst_trade_years = array.new_int()
+var array<bool> btst_trade_was_tp = array.new_bool()
+var array<float> btst_trade_points = array.new_float()
+var array<int> btst_trade_duration_bars = array.new_int()
+var array<string> btst_trade_type = array.new_string()
+
+var int btst_total_gapup_signals = 0
+var int btst_total_gapdown_signals = 0
+var int btst_filtered_gapup_vwap = 0
+var int btst_filtered_gapdown_vwap = 0
+var int btst_filtered_gapup_ema = 0
+var int btst_filtered_gapdown_ema = 0
+var int btst_filtered_gapup_volume = 0
+var int btst_filtered_gapdown_volume = 0
+
+var float btst_day_high = na
+var float btst_day_low = na
+
+// ═════════════════════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═════════════════════════════════════════════════════════════════════════════
+
+f_calculate_days_in_trade(int entry_timestamp, int exit_timestamp) =>
+    int milliseconds_diff = exit_timestamp - entry_timestamp
+    int milliseconds_per_day = 86400000
+    int calendar_days = math.max(1, math.round(milliseconds_diff / float(milliseconds_per_day)))
+    calendar_days
+
+f_gann_label_y_entry_buy(float price) => price - atr14 * gann_label_atr_mult
+f_gann_label_y_entry_sell(float price) => price + atr14 * gann_label_atr_mult
+f_gann_label_y_exit_tp_buy(float price) => price + atr14 * (gann_label_atr_mult + gann_exit_label_extra)
+f_gann_label_y_exit_tp_sell(float price) => price - atr14 * (gann_label_atr_mult + gann_exit_label_extra)
+f_gann_label_y_exit_sl_buy(float price) => price - atr14 * (gann_label_atr_mult + gann_exit_label_extra)
+f_gann_label_y_exit_sl_sell(float price) => price + atr14 * (gann_label_atr_mult + gann_exit_label_extra)
+
+f_gann_get_trailing_buffer() =>
+    gann_enable_trailing_buffer ? (atr14 * gann_trailing_sl_atr_multiplier) : 0.0
+
+f_gann_check_tp_hit_buy(float tp_level) =>
+    gann_tp_detection_method == "Wick Touch" ? high >= tp_level : close >= tp_level
+
+f_gann_check_tp_hit_sell(float tp_level) =>
+    gann_tp_detection_method == "Wick Touch" ? low <= tp_level : close <= tp_level
+
+f_gann_check_gann_sl_hit_buy(float sl_level) =>
+    gann_sl_detection_method == "Wick Touch" ? low <= sl_level : close <= sl_level
+
+f_gann_check_gann_sl_hit_sell(float sl_level) =>
+    gann_sl_detection_method == "Wick Touch" ? high >= sl_level : close >= sl_level
+
+f_gann_check_tsl_hit_buy(float tsl_level) =>
+    gann_tsl_detection_method == "Wick Touch" ? low <= tsl_level : close <= tsl_level
+
+f_gann_check_tsl_hit_sell(float tsl_level) =>
+    gann_tsl_detection_method == "Wick Touch" ? high >= tsl_level : close >= tsl_level
+
+f_gann_calculate_points(int direction, float entry_level, float entry_close, float exit_level, float exit_close, float exit_wick, string exit_type) =>
+    float entry_ref = na
+    float exit_ref = na
+    
+    string calc_method = exit_type == "TP" ? gann_tp_points_calculation : (exit_type == "GANN_SL" ? gann_sl_points_calculation : gann_tsl_points_calculation)
+    
+    if calc_method == "Entry Close to Exit Close"
+        entry_ref := entry_close
+        exit_ref := exit_close
+    else if calc_method == "Entry Close to Exit Wick"
+        entry_ref := entry_close
+        exit_ref := exit_wick
+    else if calc_method == "Entry Close to Exit Level"
+        entry_ref := entry_close
+        exit_ref := exit_level
+    else
+        entry_ref := entry_level
+        exit_ref := exit_level
+    
+    float result = direction == 1 ? (exit_ref - entry_ref) : (entry_ref - exit_ref)
+    result
+
+barsToDays(int bars) =>
+    int bars_per_day = 1
+    
+    if timeframe.period == "15"
+        bars_per_day := 25
+    else if timeframe.period == "5"
+        bars_per_day := 75
+    else if timeframe.period == "60"
+        bars_per_day := 7
+    else if timeframe.period == "D" or timeframe.period == "1D"
+        bars_per_day := 1
+    
+    int days = math.max(1, math.round(bars / bars_per_day))
+    days
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PRIORITY MANAGEMENT
+// ═════════════════════════════════════════════════════════════════════════════
+
+f_can_gann_enter() =>
+    if not enable_gann
+        false
+    else if trade_priority == "Independent (Both Allowed)"
+        true
+    else if trade_priority == "GANN Priority"
+        true
+    else if trade_priority == "BTST Priority"
+        not btst_in_trade
+    else
+        not btst_in_trade
+
+f_can_btst_enter() =>
+    if not enable_btst
+        false
+    else if trade_priority == "Independent (Both Allowed)"
+        true
+    else if trade_priority == "BTST Priority"
+        true
+    else if trade_priority == "GANN Priority"
+        not gann_TRADE_ACTIVE
+    else
+        not gann_TRADE_ACTIVE
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GANN SYSTEM - EOD CHECK
+// ═════════════════════════════════════════════════════════════════════════════
+
+int gann_current_hour = hour(time, syminfo.timezone)
+int gann_current_minute = minute(time, syminfo.timezone)
+int gann_current_dayofweek = dayofweek(time, syminfo.timezone)
+
+int gann_selected_eod_day = switch gann_eod_day_of_week
+    "Monday" => dayofweek.monday
+    "Tuesday" => dayofweek.tuesday
+    "Wednesday" => dayofweek.wednesday
+    "Thursday" => dayofweek.thursday
+    "Friday" => dayofweek.friday
+    => dayofweek.friday
+
+bool gann_is_eod_day = gann_current_dayofweek == gann_selected_eod_day
+bool gann_is_eod_exit_time = gann_enable_eod_exit and gann_is_eod_day and gann_current_hour == gann_eod_hour and gann_current_minute == gann_eod_minute
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GANN SYSTEM - ENTRY LOGIC (WITH ATR FILTER)
+// ═════════════════════════════════════════════════════════════════════════════
+
+if not gann_TRADE_ACTIVE and enable_gann
+    if gann_buy_signal and f_can_gann_enter()
+        gann_ENTRY_PRICE := gann_Bat
+        gann_ENTRY_CLOSE_PRICE := close
+        gann_SL_PRICE := gann_Bsl
+        gann_CURRENT_SL := gann_Bsl
+        gann_TP_LEVEL1 := gann_Bt1
+        gann_TP_LEVEL2 := gann_Bt2
+        gann_TP_LEVEL3 := gann_Bt3
+        gann_TP_LEVEL4 := gann_Bt4
+        gann_ENTRY_BAR := bar_index
+        gann_ENTRY_TIME := time
+        gann_TRADE_DIR := 1
+        gann_TRADE_ACTIVE := true
+        gann_HIGHEST_TP_REACHED := 0
+        gann_IS_TRAILING_ACTIVE := false
+        
+        gann_ALERT_BUY_FIRED := true
+        gann_ALERT_SELL_FIRED := false
+        gann_ALERT_TP1_FIRED := false
+        gann_ALERT_TP2_FIRED := false
+        gann_ALERT_TP3_FIRED := false
+        gann_ALERT_TP4_FIRED := false
+        gann_ALERT_SL_FIRED := false
+        gann_ALERT_TSL_FIRED := false
+        
+        string label_text = "GANN BUY\n" + str.tostring(math.round(gann_Bat, 2))
+        if gann_enable_ema_filter
+            label_text := label_text + "\nEMA✓"
+        if gann_enable_cpr_filter
+            label_text := label_text + "\nCPR✓"
+        if enable_market_structure
+            label_text := label_text + "\nMS✓"
+        if gann_enable_atr_filter
+            label_text := label_text + "\nATR✓" + str.tostring(math.round(gann_atr_value/gann_atr_avg, 2)) + "x"
+        
+        label.new(x=bar_index, y=f_gann_label_y_entry_buy(gann_Bat), text=label_text, 
+                  style=label.style_label_up, color=gann_EntryBuyColor, textcolor=color.white, size=size.normal)
+                  
+    else if gann_sell_signal and f_can_gann_enter()
+        gann_ENTRY_PRICE := gann_Sat
+        gann_ENTRY_CLOSE_PRICE := close
+        gann_SL_PRICE := gann_Ssl
+        gann_CURRENT_SL := gann_Ssl
+        gann_TP_LEVEL1 := gann_St1
+        gann_TP_LEVEL2 := gann_St2
+        gann_TP_LEVEL3 := gann_St3
+        gann_TP_LEVEL4 := gann_St4
+        gann_ENTRY_BAR := bar_index
+        gann_ENTRY_TIME := time
+        gann_TRADE_DIR := -1
+        gann_TRADE_ACTIVE := true
+        gann_HIGHEST_TP_REACHED := 0
+        gann_IS_TRAILING_ACTIVE := false
+        
+        gann_ALERT_BUY_FIRED := false
+        gann_ALERT_SELL_FIRED := true
+        gann_ALERT_TP1_FIRED := false
+        gann_ALERT_TP2_FIRED := false
+        gann_ALERT_TP3_FIRED := false
+        gann_ALERT_TP4_FIRED := false
+        gann_ALERT_SL_FIRED := false
+        gann_ALERT_TSL_FIRED := false
+        
+        string label_text = "GANN SELL\n" + str.tostring(math.round(gann_Sat, 2))
+        if gann_enable_ema_filter
+            label_text := label_text + "\nEMA✓"
+        if gann_enable_cpr_filter
+            label_text := label_text + "\nCPR✓"
+        if enable_market_structure
+            label_text := label_text + "\nMS✓"
+        if gann_enable_atr_filter
+            label_text := label_text + "\nATR✓" + str.tostring(math.round(gann_atr_value/gann_atr_avg, 2)) + "x"
+        
+        label.new(x=bar_index, y=f_gann_label_y_entry_sell(gann_Sat), text=label_text, 
+                  style=label.style_label_down, color=gann_EntrySellColor, textcolor=color.white, size=size.normal)
+    
+    // ATR rejection labels
+    else if ta.crossover(close, gann_Bat) and gann_ema_confirms_buy and gann_cpr_confirms_buy and ms_allows_buy and enable_gann and not gann_atr_confirms and gann_enable_atr_filter
+        label.new(x=bar_index, y=f_gann_label_y_entry_buy(gann_Bat), 
+                  text="GANN BUY\nATR✗\n" + str.tostring(math.round(gann_atr_value/gann_atr_avg, 2)) + "x < " + str.tostring(gann_min_atr_multiplier) + "x", 
+                  style=label.style_label_up, color=color.new(gann_EntryBuyColor, 80), 
+                  textcolor=color.new(color.gray, 0), size=size.tiny)
+    
+    else if ta.crossunder(close, gann_Sat) and gann_ema_confirms_sell and gann_cpr_confirms_sell and ms_allows_sell and enable_gann and not gann_atr_confirms and gann_enable_atr_filter
+        label.new(x=bar_index, y=f_gann_label_y_entry_sell(gann_Sat), 
+                  text="GANN SELL\nATR✗\n" + str.tostring(math.round(gann_atr_value/gann_atr_avg, 2)) + "x < " + str.tostring(gann_min_atr_multiplier) + "x", 
+                  style=label.style_label_down, color=color.new(gann_EntrySellColor, 80), 
+                  textcolor=color.new(color.gray, 0), size=size.tiny)
+    
+    // Priority blocking labels
+    else if ta.crossover(close, gann_Bat) and gann_ema_confirms_buy and gann_cpr_confirms_buy and ms_allows_buy and gann_atr_confirms and enable_gann and not f_can_gann_enter()
+        string block_reason = trade_priority == "BTST Priority" ? "BTST Active" : "First Entry Active"
+        label.new(x=bar_index, y=f_gann_label_y_entry_buy(gann_Bat), 
+                  text="GANN BUY\nBlocked\n" + block_reason, 
+                  style=label.style_label_up, color=color.new(gann_EntryBuyColor, 80), 
+                  textcolor=color.new(color.gray, 0), size=size.small)
+    
+    else if ta.crossunder(close, gann_Sat) and gann_ema_confirms_sell and gann_cpr_confirms_sell and ms_allows_sell and gann_atr_confirms and enable_gann and not f_can_gann_enter()
+        string block_reason = trade_priority == "BTST Priority" ? "BTST Active" : "First Entry Active"
+        label.new(x=bar_index, y=f_gann_label_y_entry_sell(gann_Sat), 
+                  text="GANN SELL\nBlocked\n" + block_reason, 
+                  style=label.style_label_down, color=color.new(gann_EntrySellColor, 80), 
+                  textcolor=color.new(color.gray, 0), size=size.small)
+    
+    // Market Structure rejection labels
+    else if ta.crossover(close, gann_Bat) and gann_ema_confirms_buy and gann_cpr_confirms_buy and gann_atr_confirms and enable_gann and not ms_allows_buy and enable_market_structure
+        label.new(x=bar_index, y=f_gann_label_y_entry_buy(gann_Bat), 
+                  text="GANN BUY\nMS✗\nBearish", 
+                  style=label.style_label_up, color=color.new(gann_EntryBuyColor, 80), 
+                  textcolor=color.new(color.gray, 0), size=size.tiny)
+    
+    else if ta.crossunder(close, gann_Sat) and gann_ema_confirms_sell and gann_cpr_confirms_sell and gann_atr_confirms and enable_gann and not ms_allows_sell and enable_market_structure
+        label.new(x=bar_index, y=f_gann_label_y_entry_sell(gann_Sat), 
+                  text="GANN SELL\nMS✗\nBullish", 
+                  style=label.style_label_down, color=color.new(gann_EntrySellColor, 80), 
+                  textcolor=color.new(color.gray, 0), size=size.tiny)
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GANN SYSTEM - EXIT LOGIC
+// ═════════════════════════════════════════════════════════════════════════════
+
+if gann_TRADE_ACTIVE
+    var bool gann_TP1_HIT = false
+    var bool gann_TP2_HIT = false
+    var bool gann_TP3_HIT = false
+    var bool gann_TP4_HIT = false
+    var bool gann_SL_HIT = false
+
+    if gann_TRADE_DIR == 1  // BUY
+        if f_gann_check_tp_hit_buy(gann_TP_LEVEL4) and not gann_TP4_HIT
+            gann_TP4_HIT := true
+            if not gann_ALERT_TP4_FIRED
+                gann_ALERT_TP4_FIRED := true
+            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 4
+                gann_HIGHEST_TP_REACHED := 4
+                float buffer = f_gann_get_trailing_buffer()
+                gann_CURRENT_SL := gann_TP_LEVEL3 - buffer
+                gann_IS_TRAILING_ACTIVE := true
+                
+        if f_gann_check_tp_hit_buy(gann_TP_LEVEL3) and not gann_TP3_HIT
+            gann_TP3_HIT := true
+            if not gann_ALERT_TP3_FIRED
+                gann_ALERT_TP3_FIRED := true
+            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 3
+                gann_HIGHEST_TP_REACHED := 3
+                float buffer = f_gann_get_trailing_buffer()
+                gann_CURRENT_SL := gann_TP_LEVEL2 - buffer
+                gann_IS_TRAILING_ACTIVE := true
+                
+        if f_gann_check_tp_hit_buy(gann_TP_LEVEL2) and not gann_TP2_HIT
+            gann_TP2_HIT := true
+            if not gann_ALERT_TP2_FIRED
+                gann_ALERT_TP2_FIRED := true
+            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 2
+                gann_HIGHEST_TP_REACHED := 2
+                float buffer = f_gann_get_trailing_buffer()
+                gann_CURRENT_SL := gann_TP_LEVEL1 - buffer
+                gann_IS_TRAILING_ACTIVE := true
+                
+        if f_gann_check_tp_hit_buy(gann_TP_LEVEL1) and not gann_TP1_HIT
+            gann_TP1_HIT := true
+            if not gann_ALERT_TP1_FIRED
+                gann_ALERT_TP1_FIRED := true
+            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 1
+                gann_HIGHEST_TP_REACHED := 1
+                float buffer = f_gann_get_trailing_buffer()
+                gann_CURRENT_SL := gann_ENTRY_CLOSE_PRICE - buffer
+                gann_IS_TRAILING_ACTIVE := true
+        
+        if gann_IS_TRAILING_ACTIVE
+            if f_gann_check_tsl_hit_buy(gann_CURRENT_SL)
+                gann_SL_HIT := true
+        else
+            if f_gann_check_gann_sl_hit_buy(gann_CURRENT_SL)
+                gann_SL_HIT := true
+
+        bool exit_here = false
+        string exit_reason = ""
+        float exit_price_used = na
+        color exit_color = na
+        string exit_type = ""
+        
+        if gann_exit_tp_target == "Trailing SL"
+            if gann_SL_HIT
+                gann_EXIT_PRICE := gann_CURRENT_SL
+                exit_reason := gann_HIGHEST_TP_REACHED > 0 ? "TSL" : "SL"
+                exit_price_used := gann_CURRENT_SL
+                exit_color := gann_HIGHEST_TP_REACHED > 0 ? color.new(color.orange, 0) : gann_SLColor
+                exit_here := true
+                exit_type := gann_HIGHEST_TP_REACHED > 0 ? "TRAILING_SL" : "GANN_SL"
+                if exit_reason == "TSL" and not gann_ALERT_TSL_FIRED
+                    gann_ALERT_TSL_FIRED := true
+                else if exit_reason == "SL" and not gann_ALERT_SL_FIRED
+                    gann_ALERT_SL_FIRED := true
+            else if gann_is_eod_exit_time
+                gann_EXIT_PRICE := close
+                exit_reason := "EOD"
+                exit_price_used := close
+                exit_color := color.new(color.gray, 0)
+                exit_here := true
+                exit_type := gann_IS_TRAILING_ACTIVE ? "TRAILING_SL" : "GANN_SL"
+        else
+            if gann_exit_tp_target == "TP4" and gann_TP4_HIT
+                gann_EXIT_PRICE := gann_TP_LEVEL4
+                exit_reason := "TP4"
+                exit_price_used := gann_TP_LEVEL4
+                exit_color := gann_TPColor4
+                exit_here := true
+                exit_type := "TP"
+            else if gann_exit_tp_target == "TP3" and gann_TP3_HIT
+                gann_EXIT_PRICE := gann_TP_LEVEL3
+                exit_reason := "TP3"
+                exit_price_used := gann_TP_LEVEL3
+                exit_color := gann_TPColor3
+                exit_here := true
+                exit_type := "TP"
+            else if gann_exit_tp_target == "TP2" and gann_TP2_HIT
+                gann_EXIT_PRICE := gann_TP_LEVEL2
+                exit_reason := "TP2"
+                exit_price_used := gann_TP_LEVEL2
+                exit_color := gann_TPColor2
+                exit_here := true
+                exit_type := "TP"
+            else if gann_exit_tp_target == "TP1" and gann_TP1_HIT
+                gann_EXIT_PRICE := gann_TP_LEVEL1
+                exit_reason := "TP1"
+                exit_price_used := gann_TP_LEVEL1
+                exit_color := gann_TPColor1
+                exit_here := true
+                exit_type := "TP"
+            else if gann_SL_HIT
+                gann_EXIT_PRICE := gann_SL_PRICE
+                exit_reason := "SL"
+                exit_price_used := gann_SL_PRICE
+                exit_color := gann_SLColor
+                exit_here := true
+                exit_type := "GANN_SL"
+                if not gann_ALERT_SL_FIRED
+                    gann_ALERT_SL_FIRED := true
+            else if gann_is_eod_exit_time
+                gann_EXIT_PRICE := close
+                exit_reason := "EOD"
+                exit_price_used := close
+                exit_color := color.new(color.gray, 0)
+                exit_here := true
+                exit_type := "GANN_SL"
+
+        if exit_here
+            float exit_wick_high = high
+            float exit_wick_low = low
+            
+            float exit_wick_value = na
+            if exit_type == "TP"
+                exit_wick_value := gann_tp_detection_method == "Wick Touch" ? exit_wick_high : close
+            else if exit_type == "GANN_SL"
+                exit_wick_value := gann_sl_detection_method == "Wick Touch" ? exit_wick_low : close
+            else
+                exit_wick_value := gann_tsl_detection_method == "Wick Touch" ? exit_wick_low : close
+            
+            float pts = f_gann_calculate_points(1, gann_ENTRY_PRICE, gann_ENTRY_CLOSE_PRICE, gann_EXIT_PRICE, close, exit_wick_value, exit_type)
+            bool is_winner = pts > 0
+            
+            int days_in_trade = f_calculate_days_in_trade(gann_ENTRY_TIME, time)
+            
+            array.push(gann_trade_months, month(time))
+            array.push(gann_trade_years, year(time))
+            array.push(gann_trade_was_tp, is_winner)
+            array.push(gann_trade_points, math.abs(pts))
+            array.push(gann_trade_duration_days, days_in_trade)
+            array.push(gann_trade_direction, 1)
+            array.push(gann_trade_exit_type, exit_reason)
+
+            bool isTP = str.contains(exit_reason, "TP") or exit_reason == "TSL"
+            float label_y = isTP ? f_gann_label_y_exit_tp_buy(gann_EXIT_PRICE) : f_gann_label_y_exit_sl_buy(gann_EXIT_PRICE)
+            
+            string lbltxt = "GANN " + exit_reason
+            if exit_reason == "TSL"
+                lbltxt := "GANN TSL (TP" + str.tostring(gann_HIGHEST_TP_REACHED) + ")"
+            lbltxt := lbltxt + "\n" + (is_winner ? "+" : "-") + str.tostring(math.round(math.abs(pts), 2))
+            lbltxt := lbltxt + "\n" + str.tostring(days_in_trade) + "d"
+            
+            label.new(x=bar_index, y=label_y, text=lbltxt, 
+                      style=isTP ? label.style_label_down : label.style_label_up, 
+                      textcolor=color.white, color=exit_color, size=size.small)
+
+            gann_TRADE_ACTIVE := false
+            gann_TP1_HIT := false
+            gann_TP2_HIT := false
+            gann_TP3_HIT := false
+            gann_TP4_HIT := false
+            gann_SL_HIT := false
+            gann_HIGHEST_TP_REACHED := 0
+            gann_IS_TRAILING_ACTIVE := false
+
+    else if gann_TRADE_DIR == -1  // SELL
+        if f_gann_check_tp_hit_sell(gann_TP_LEVEL4) and not gann_TP4_HIT
+            gann_TP4_HIT := true
+            if not gann_ALERT_TP4_FIRED
+                gann_ALERT_TP4_FIRED := true
+            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 4
+                gann_HIGHEST_TP_REACHED := 4
+                float buffer = f_gann_get_trailing_buffer()
+                gann_CURRENT_SL := gann_TP_LEVEL3 + buffer
+                gann_IS_TRAILING_ACTIVE := true
+                
+        if f_gann_check_tp_hit_sell(gann_TP_LEVEL3) and not gann_TP3_HIT
+            gann_TP3_HIT := true
+            if not gann_ALERT_TP3_FIRED
+                gann_ALERT_TP3_FIRED := true
+            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 3
+                gann_HIGHEST_TP_REACHED := 3
+                float buffer = f_gann_get_trailing_buffer()
+                gann_CURRENT_SL := gann_TP_LEVEL2 + buffer
+                gann_IS_TRAILING_ACTIVE := true
+                
+        if f_gann_check_tp_hit_sell(gann_TP_LEVEL2) and not gann_TP2_HIT
+            gann_TP2_HIT := true
+            if not gann_ALERT_TP2_FIRED
+                gann_ALERT_TP2_FIRED := true
+            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 2
+                gann_HIGHEST_TP_REACHED := 2
+                float buffer = f_gann_get_trailing_buffer()
+                gann_CURRENT_SL := gann_TP_LEVEL1 + buffer
+                gann_IS_TRAILING_ACTIVE := true
+                
+        if f_gann_check_tp_hit_sell(gann_TP_LEVEL1) and not gann_TP1_HIT
+            gann_TP1_HIT := true
+            if not gann_ALERT_TP1_FIRED
+                gann_ALERT_TP1_FIRED := true
+            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 1
+                gann_HIGHEST_TP_REACHED := 1
+                float buffer = f_gann_get_trailing_buffer()
+                gann_CURRENT_SL := gann_ENTRY_CLOSE_PRICE + buffer
+                gann_IS_TRAILING_ACTIVE := true
+        
+        if gann_IS_TRAILING_ACTIVE
+            if f_gann_check_tsl_hit_sell(gann_CURRENT_SL)
+                gann_SL_HIT := true
+        else
+            if f_gann_check_gann_sl_hit_sell(gann_CURRENT_SL)
+                gann_SL_HIT := true
+
+        bool exit_here = false
+        string exit_reason = ""
+        float exit_price_used = na
+        color exit_color = na
+        string exit_type = ""
+        
+        if gann_exit_tp_target == "Trailing SL"
+            if gann_SL_HIT
+                gann_EXIT_PRICE := gann_CURRENT_SL
+                exit_reason := gann_HIGHEST_TP_REACHED > 0 ? "TSL" : "SL"
+                exit_price_used := gann_CURRENT_SL
+                exit_color := gann_HIGHEST_TP_REACHED > 0 ? color.new(color.orange, 0) : gann_SLColor
+                exit_here := true
+                exit_type := gann_HIGHEST_TP_REACHED > 0 ? "TRAILING_SL" : "GANN_SL"
+                if exit_reason == "TSL" and not gann_ALERT_TSL_FIRED
+                    gann_ALERT_TSL_FIRED := true
+                else if exit_reason == "SL" and not gann_ALERT_SL_FIRED
+                    gann_ALERT_SL_FIRED := true
+            else if gann_is_eod_exit_time
+                gann_EXIT_PRICE := close
+                exit_reason := "EOD"
+                exit_price_used := close
+                exit_color := color.new(color.gray, 0)
+                exit_here := true
+                exit_type := gann_IS_TRAILING_ACTIVE ? "TRAILING_SL" : "GANN_SL"
+        else
+            if gann_exit_tp_target == "TP4" and gann_TP4_HIT
+                gann_EXIT_PRICE := gann_TP_LEVEL4
+                exit_reason := "TP4"
+                exit_price_used := gann_TP_LEVEL4
+                exit_color := gann_TPColor4
+                exit_here := true
+                exit_type := "TP"
+            else if gann_exit_tp_target == "TP3" and gann_TP3_HIT
+                gann_EXIT_PRICE := gann_TP_LEVEL3
+                exit_reason := "TP3"
+                exit_price_used := gann_TP_LEVEL3
+                exit_color := gann_TPColor3
+                exit_here := true
+                exit_type := "TP"
+            else if gann_exit_tp_target == "TP2" and gann_TP2_HIT
+                gann_EXIT_PRICE := gann_TP_LEVEL2
+                exit_reason := "TP2"
+                exit_price_used := gann_TP_LEVEL2
+                exit_color := gann_TPColor2
+                exit_here := true
+                exit_type := "TP"
+            else if gann_exit_tp_target == "TP1" and gann_TP1_HIT
+                gann_EXIT_PRICE := gann_TP_LEVEL1
+                exit_reason := "TP1"
+                exit_price_used := gann_TP_LEVEL1
+                exit_color := gann_TPColor1
+                exit_here := true
+                exit_type := "TP"
+            else if gann_SL_HIT
+                gann_EXIT_PRICE := gann_SL_PRICE
+                exit_reason := "SL"
+                exit_price_used := gann_SL_PRICE
+                exit_color := gann_SLColor
+                exit_here := true
+                exit_type := "GANN_SL"
+                if not gann_ALERT_SL_FIRED
+                    gann_ALERT_SL_FIRED := true
+            else if gann_is_eod_exit_time
+                gann_EXIT_PRICE := close
+                exit_reason := "EOD"
+                exit_price_used := close
+                exit_color := color.new(color.gray, 0)
+                exit_here := true
+                exit_type := "GANN_SL"
+
+        if exit_here
+            float exit_wick_high = high
+            float exit_wick_low = low
+            
+            float exit_wick_value = na
+            if exit_type == "TP"
+                exit_wick_value := gann_tp_detection_method == "Wick Touch" ? exit_wick_low : close
+            else if exit_type == "GANN_SL"
+                exit_wick_value := gann_sl_detection_method == "Wick Touch" ? exit_wick_high : close
+            else
+                exit_wick_value := gann_tsl_detection_method == "Wick Touch" ? exit_wick_high : close
+            
+            float pts = f_gann_calculate_points(-1, gann_ENTRY_PRICE, gann_ENTRY_CLOSE_PRICE, gann_EXIT_PRICE, close, exit_wick_value, exit_type)
+            bool is_winner = pts > 0
+            
+            int days_in_trade = f_calculate_days_in_trade(gann_ENTRY_TIME, time)
+            
+            array.push(gann_trade_months, month(time))
+            array.push(gann_trade_years, year(time))
+            array.push(gann_trade_was_tp, is_winner)
+            array.push(gann_trade_points, math.abs(pts))
+            array.push(gann_trade_duration_days, days_in_trade)
+            array.push(gann_trade_direction, -1)
+            array.push(gann_trade_exit_type, exit_reason)
+
+            bool isTP = str.contains(exit_reason, "TP") or exit_reason == "TSL"
+            float label_y = isTP ? f_gann_label_y_exit_tp_sell(gann_EXIT_PRICE) : f_gann_label_y_exit_sl_sell(gann_EXIT_PRICE)
+            
+            string lbltxt = "GANN " + exit_reason
+            if exit_reason == "TSL"
+                lbltxt := "GANN TSL (TP" + str.tostring(gann_HIGHEST_TP_REACHED) + ")"
+            lbltxt := lbltxt + "\n" + (is_winner ? "+" : "-") + str.tostring(math.round(math.abs(pts), 2))
+            lbltxt := lbltxt + "\n" + str.tostring(days_in_trade) + "d"
+            
+            label.new(x=bar_index, y=label_y, text=lbltxt, 
+                      style=isTP ? label.style_label_up : label.style_label_down, 
+                      textcolor=color.white, color=exit_color, size=size.small)
+
+            gann_TRADE_ACTIVE := false
+            gann_TP1_HIT := false
+            gann_TP2_HIT := false
+            gann_TP3_HIT := false
+            gann_TP4_HIT := false
+            gann_SL_HIT := false
+            gann_HIGHEST_TP_REACHED := 0
+            gann_IS_TRAILING_ACTIVE := false
+
+plot(gann_TRADE_ACTIVE and gann_exit_tp_target == "Trailing SL" ? gann_CURRENT_SL : na, 
+     color=color.new(color.orange, 0), style=plot.style_circles, linewidth=2, title="GANN Trailing SL")
+
+plot(gann_ShowBlvl and enable_gann ? gann_Bat : na, color=gann_EntryBuyColor, style=plot.style_line, linewidth=2, title="GANN Buy Entry")
+plot(gann_ShowBlvl and enable_gann ? gann_Bsl : na, color=gann_SLColor, style=plot.style_line, linewidth=2, title="GANN Buy SL")
+plot(gann_ShowBlvl and enable_gann ? gann_Bt1 : na, color=gann_TPColor1, style=plot.style_line, linewidth=1, title="GANN Buy TP1")
+plot(gann_ShowBlvl and enable_gann ? gann_Bt2 : na, color=gann_TPColor2, style=plot.style_line, linewidth=1, title="GANN Buy TP2")
+plot(gann_ShowBlvl and enable_gann ? gann_Bt3 : na, color=gann_TPColor3, style=plot.style_line, linewidth=1, title="GANN Buy TP3")
+plot(gann_ShowBlvl and enable_gann ? gann_Bt4 : na, color=gann_TPColor4, style=plot.style_line, linewidth=1, title="GANN Buy TP4")
+plot(gann_ShowSlvl and enable_gann ? gann_Sat : na, color=gann_EntrySellColor, style=plot.style_line, linewidth=2, title="GANN Sell Entry")
+plot(gann_ShowSlvl and enable_gann ? gann_Ssl : na, color=gann_SLColor, style=plot.style_line, linewidth=2, title="GANN Sell SL")
+plot(gann_ShowSlvl and enable_gann ? gann_St1 : na, color=gann_TPColor1, style=plot.style_line, linewidth=1, title="GANN Sell TP1")
+plot(gann_ShowSlvl and enable_gann ? gann_St2 : na, color=gann_TPColor2, style=plot.style_line, linewidth=1, title="GANN Sell TP2")
+plot(gann_ShowSlvl and enable_gann ? gann_St3 : na, color=gann_TPColor3, style=plot.style_line, linewidth=1, title="GANN Sell TP3")
+plot(gann_ShowSlvl and enable_gann ? gann_St4 : na, color=gann_TPColor4, style=plot.style_line, linewidth=1, title="GANN Sell TP4")
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BTST SYSTEM - DAY TRACKING & ENTRY LOGIC
+// ═════════════════════════════════════════════════════════════════════════════
+
+bool btst_isNewDay = ta.change(time("D")) != 0
+if btst_isNewDay
+    btst_day_high := high
+    btst_day_low := low
+else
+    btst_day_high := math.max(nz(btst_day_high, high), high)
+    btst_day_low := math.min(nz(btst_day_low, low), low)
+
+bool btst_isInTimeRange = (hour(time) == 15) and (minute(time) == 15)
+
+if btst_isInTimeRange and not btst_in_trade and enable_btst
+    float btst_PriceNC = close
+    float btst_PriceHC = (open + high + low + close) / 4
+    
+    bool base_gapup = btst_PriceNC > btst_PriceHC
+    bool base_gapdown = btst_PriceHC > btst_PriceNC
+    
+    bool above_vwap = close > btst_vwap_value
+    bool below_vwap = close < btst_vwap_value
+    bool above_ema = close > btst_ema_value
+    bool below_ema = close < btst_ema_value
+    bool volume_confirmed = volume > btst_volume_threshold
+    
+    bool gapup_passed = true
+    bool gapdown_passed = true
+    
+    string rejection_reason_up = ""
+    string rejection_reason_dn = ""
+    
+    if base_gapup
+        btst_total_gapup_signals += 1
+        
+        if btst_enable_vwap_confluence and not above_vwap
+            gapup_passed := false
+            btst_filtered_gapup_vwap += 1
+            rejection_reason_up := rejection_reason_up + "✗VWAP "
+        
+        if btst_enable_ema_confluence and not above_ema
+            gapup_passed := false
+            btst_filtered_gapup_ema += 1
+            rejection_reason_up := rejection_reason_up + "✗EMA "
+        
+        if btst_enable_volume_confluence and not volume_confirmed
+            gapup_passed := false
+            btst_filtered_gapup_volume += 1
+            rejection_reason_up := rejection_reason_up + "✗VOL "
+    
+    if base_gapdown
+        btst_total_gapdown_signals += 1
+        
+        if btst_enable_vwap_confluence and not below_vwap
+            gapdown_passed := false
+            btst_filtered_gapdown_vwap += 1
+            rejection_reason_dn := rejection_reason_dn + "✗VWAP "
+        
+        if btst_enable_ema_confluence and not below_ema
+            gapdown_passed := false
+            btst_filtered_gapdown_ema += 1
+            rejection_reason_dn := rejection_reason_dn + "✗EMA "
+        
+        if btst_enable_volume_confluence and not volume_confirmed
+            gapdown_passed := false
+            btst_filtered_gapdown_volume += 1
+            rejection_reason_dn := rejection_reason_dn + "✗VOL "
+    
+    bool btst_Gapup = base_gapup and gapup_passed
+    bool btst_Gapdown = base_gapdown and gapdown_passed
+    
+    if btst_Gapup and f_can_btst_enter()
+        string label_text = "BTST Gap Up\n"
+        if btst_enable_vwap_confluence
+            label_text := label_text + "✓ Above VWAP\n"
+        if btst_enable_ema_confluence
+            label_text := label_text + "✓ Above EMA\n"
+        if btst_enable_volume_confluence
+            label_text := label_text + "✓ Vol: " + str.tostring(math.round(volume/btst_avg_volume, 2)) + "x"
+        
+        label.new(bar_index, high, text=label_text, yloc=yloc.abovebar, style=label.style_label_down, 
+                  color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+        
+        btst_in_trade := true
+        btst_current_trade_type := "GAP_UP"
+        btst_entry_price := close
+        btst_tp_price := close * (1 + btst_target_percent / 100)
+        btst_sl_price := close * (1 - btst_sl_percent / 100)
+        btst_entry_bar := bar_index
+        btst_entry_time := time
+        
+        btst_tp_line := line.new(bar_index, btst_tp_price, bar_index + 1, btst_tp_price, 
+                                 color=color.new(color.green, 30), width=2, style=line.style_dotted)
+        btst_sl_line := line.new(bar_index, btst_sl_price, bar_index + 1, btst_sl_price, 
+                                 color=color.new(color.red, 30), width=2, style=line.style_dotted)
+        
+        btst_tp_label := label.new(bar_index, btst_tp_price, "BTST TP: " + str.tostring(math.round(btst_tp_price, 2)), 
+                                   color=color.new(color.green, 30), textcolor=color.white, 
+                                   style=label.style_label_left, size=size.small)
+        btst_sl_label := label.new(bar_index, btst_sl_price, "BTST SL: " + str.tostring(math.round(btst_sl_price, 2)), 
+                                   color=color.new(color.red, 30), textcolor=color.white, 
+                                   style=label.style_label_left, size=size.small)
+    
+    else if btst_Gapup and enable_btst and not f_can_btst_enter()
+        string block_reason = trade_priority == "GANN Priority" ? "GANN Active" : "First Entry Active"
+        label.new(bar_index, high, text="BTST Gap Up\nBlocked\n" + block_reason, 
+                  yloc=yloc.abovebar, style=label.style_label_down, 
+                  color=color.new(color.green, 80), textcolor=color.new(color.gray, 0), size=size.tiny)
+    
+    else if base_gapup and not btst_Gapup
+        string reject_text = "Gap Up\n" + rejection_reason_up
+        label.new(bar_index, high, text=reject_text, yloc=yloc.abovebar, style=label.style_label_down, 
+                  color=color.new(color.green, 70), textcolor=color.gray, size=size.tiny)
+    
+    if btst_Gapdown and f_can_btst_enter()
+        string label_text = "BTST Gap Down\n"
+        if btst_enable_vwap_confluence
+            label_text := label_text + "✓ Below VWAP\n"
+        if btst_enable_ema_confluence
+            label_text := label_text + "✓ Below EMA\n"
+        if btst_enable_volume_confluence
+            label_text := label_text + "✓ Vol: " + str.tostring(math.round(volume/btst_avg_volume, 2)) + "x"
+        
+        label.new(bar_index, low, text=label_text, yloc=yloc.belowbar, style=label.style_label_up, 
+                  color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+        
+        btst_in_trade := true
+        btst_current_trade_type := "GAP_DOWN"
+        btst_entry_price := close
+        btst_tp_price := close * (1 - btst_target_percent / 100)
+        btst_sl_price := close * (1 + btst_sl_percent / 100)
+        btst_entry_bar := bar_index
+        btst_entry_time := time
+        
+        btst_tp_line := line.new(bar_index, btst_tp_price, bar_index + 1, btst_tp_price, 
+                                 color=color.new(color.green, 30), width=2, style=line.style_dotted)
+        btst_sl_line := line.new(bar_index, btst_sl_price, bar_index + 1, btst_sl_price, 
+                                 color=color.new(color.red, 30), width=2, style=line.style_dotted)
+        
+        btst_tp_label := label.new(bar_index, btst_tp_price, "BTST TP: " + str.tostring(math.round(btst_tp_price, 2)), 
+                                   color=color.new(color.green, 30), textcolor=color.white, 
+                                   style=label.style_label_left, size=size.small)
+        btst_sl_label := label.new(bar_index, btst_sl_price, "BTST SL: " + str.tostring(math.round(btst_sl_price, 2)), 
+                                   color=color.new(color.red, 30), textcolor=color.white, 
+                                   style=label.style_label_left, size=size.small)
+    
+    else if btst_Gapdown and enable_btst and not f_can_btst_enter()
+        string block_reason = trade_priority == "GANN Priority" ? "GANN Active" : "First Entry Active"
+        label.new(bar_index, low, text="BTST Gap Down\nBlocked\n" + block_reason, 
+                  yloc=yloc.belowbar, style=label.style_label_up, 
+                  color=color.new(color.red, 80), textcolor=color.new(color.gray, 0), size=size.tiny)
+    
+    else if base_gapdown and not btst_Gapdown
+        string reject_text = "Gap Down\n" + rejection_reason_dn
+        label.new(bar_index, low, text=reject_text, yloc=yloc.belowbar, style=label.style_label_up, 
+                  color=color.new(color.red, 70), textcolor=color.gray, size=size.tiny)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BTST SYSTEM - EXIT LOGIC
+// ═════════════════════════════════════════════════════════════════════════════
+
+if btst_in_trade
+    if not na(btst_tp_line)
+        line.set_x2(btst_tp_line, bar_index)
+    if not na(btst_sl_line)
+        line.set_x2(btst_sl_line, bar_index)
+    
+    bool tp_hit = false
+    bool sl_hit = false
+    
+    if btst_current_trade_type == "GAP_UP"
+        tp_hit := high >= btst_tp_price
+        sl_hit := low <= btst_sl_price
+    else if btst_current_trade_type == "GAP_DOWN"
+        tp_hit := low <= btst_tp_price
+        sl_hit := high >= btst_sl_price
+    
+    if tp_hit or sl_hit
+        float exit_price = tp_hit ? btst_tp_price : btst_sl_price
+        float pts_diff = math.abs(exit_price - btst_entry_price)
+        bool was_profitable = tp_hit
+        
+        int days_held = barsToDays(bar_index - btst_entry_bar)
+        
+        array.push(btst_trade_months, month(time))
+        array.push(btst_trade_years, year(time))
+        array.push(btst_trade_was_tp, was_profitable)
+        array.push(btst_trade_points, pts_diff)
+        array.push(btst_trade_duration_bars, bar_index - btst_entry_bar)
+        array.push(btst_trade_type, btst_current_trade_type)
+        
+        string exit_label = tp_hit ? "BTST TP\n+" + str.tostring(math.round(pts_diff, 2)) : "BTST SL\n-" + str.tostring(math.round(pts_diff, 2))
+        exit_label := exit_label + "\n" + str.tostring(days_held) + "d"
+        
+        if btst_current_trade_type == "GAP_UP"
+            label.new(bar_index, tp_hit ? high : low, text=exit_label, 
+                      yloc=tp_hit ? yloc.abovebar : yloc.belowbar,
+                      style=tp_hit ? label.style_label_down : label.style_label_up,
+                      color=tp_hit ? color.new(color.green, 0) : color.new(color.red, 0),
+                      textcolor=color.white, size=size.small)
+        else
+            label.new(bar_index, tp_hit ? low : high, text=exit_label,
+                      yloc=tp_hit ? yloc.belowbar : yloc.abovebar,
+                      style=tp_hit ? label.style_label_up : label.style_label_down,
+                      color=tp_hit ? color.new(color.green, 0) : color.new(color.red, 0),
+                      textcolor=color.white, size=size.small)
+        
+        btst_in_trade := false
+        btst_current_trade_type := ""
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COMBINED PERFORMANCE TABLE WITH SL STREAK TRACKING
+// ═════════════════════════════════════════════════════════════════════════════
+
+getTablePosition(string pos) =>
+    switch pos
+        "top_left" => position.top_left
+        "top_center" => position.top_center
+        "top_right" => position.top_right
+        "middle_left" => position.middle_left
+        "middle_center" => position.middle_center
+        "middle_right" => position.middle_right
+        "bottom_left" => position.bottom_left
+        "bottom_center" => position.bottom_center
+        "bottom_right" => position.bottom_right
+        => position.top_right
+
+getMonthNameWithYear(int m, int y) =>
+    string month_name = switch m
+        1 => "Jan"
+        2 => "Feb"
+        3 => "Mar"
+        4 => "Apr"
+        5 => "May"
+        6 => "Jun"
+        7 => "Jul"
+        8 => "Aug"
+        9 => "Sep"
+        10 => "Oct"
+        11 => "Nov"
+        12 => "Dec"
+        => "Unknown"
+    month_name + " " + str.tostring(y)
+
+calculateWinRate(int tp_trades, int sl_trades) =>
+    int total_trades = tp_trades + sl_trades
+    total_trades > 0 ? math.round((tp_trades / total_trades) * 100, 2) : 0.0
+
+calculateMonthSLStreak(int target_month, int target_year) =>
+    int max_streak = 0
+    int current_streak = 0
+    float max_streak_points = 0.0
+    float current_streak_points = 0.0
+    
+    array<bool> all_trades_tp = array.new_bool()
+    array<float> all_trades_pts = array.new_float()
+    array<int> all_trades_timestamp = array.new_int()
+    array<float> all_trades_loss_amount = array.new_float()
+    
+    if array.size(gann_trade_months) > 0
+        for i = 0 to array.size(gann_trade_months) - 1
+            if array.get(gann_trade_months, i) == target_month and array.get(gann_trade_years, i) == target_year
+                bool was_tp = array.get(gann_trade_was_tp, i)
+                float pts = array.get(gann_trade_points, i)
+                float loss_amt = pts * gann_option_multiplier * gann_lot_size
+                
+                array.push(all_trades_tp, was_tp)
+                array.push(all_trades_pts, pts)
+                array.push(all_trades_timestamp, i * 2)
+                array.push(all_trades_loss_amount, loss_amt)
+    
+    if array.size(btst_trade_months) > 0
+        for i = 0 to array.size(btst_trade_months) - 1
+            if array.get(btst_trade_months, i) == target_month and array.get(btst_trade_years, i) == target_year
+                bool was_tp = array.get(btst_trade_was_tp, i)
+                float pts = array.get(btst_trade_points, i)
+                float loss_amt = pts * btst_option_multiplier * btst_lot_size
+                
+                array.push(all_trades_tp, was_tp)
+                array.push(all_trades_pts, pts)
+                array.push(all_trades_timestamp, i * 2 + 1)
+                array.push(all_trades_loss_amount, loss_amt)
+    
+    int n = array.size(all_trades_timestamp)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - 2 - i
+                if array.get(all_trades_timestamp, j) > array.get(all_trades_timestamp, j + 1)
+                    int temp_ts = array.get(all_trades_timestamp, j)
+                    array.set(all_trades_timestamp, j, array.get(all_trades_timestamp, j + 1))
+                    array.set(all_trades_timestamp, j + 1, temp_ts)
+                    
+                    bool temp_tp = array.get(all_trades_tp, j)
+                    array.set(all_trades_tp, j, array.get(all_trades_tp, j + 1))
+                    array.set(all_trades_tp, j + 1, temp_tp)
+                    
+                    float temp_pts = array.get(all_trades_pts, j)
+                    array.set(all_trades_pts, j, array.get(all_trades_pts, j + 1))
+                    array.set(all_trades_pts, j + 1, temp_pts)
+                    
+                    float temp_loss = array.get(all_trades_loss_amount, j)
+                    array.set(all_trades_loss_amount, j, array.get(all_trades_loss_amount, j + 1))
+                    array.set(all_trades_loss_amount, j + 1, temp_loss)
+    
+    if array.size(all_trades_tp) > 0
+        for i = 0 to array.size(all_trades_tp) - 1
+            bool is_tp = array.get(all_trades_tp, i)
+            float loss_amount = array.get(all_trades_loss_amount, i)
+            
+            if not is_tp
+                current_streak += 1
+                current_streak_points += loss_amount
+                
+                if current_streak > max_streak
+                    max_streak := current_streak
+                    max_streak_points := current_streak_points
+            else
+                current_streak := 0
+                current_streak_points := 0.0
+    
+    [max_streak, max_streak_points]
+
+calculateGlobalMaxSLStreak() =>
+    int max_streak = 0
+    int current_streak = 0
+    float max_streak_points = 0.0
+    float current_streak_points = 0.0
+    
+    array<bool> all_trades_tp = array.new_bool()
+    array<int> all_trades_month = array.new_int()
+    array<int> all_trades_year = array.new_int()
+    array<int> all_trades_index = array.new_int()
+    array<float> all_trades_loss_amount = array.new_float()
+    array<string> all_trades_system = array.new_string()
+    
+    if array.size(gann_trade_months) > 0
+        for i = 0 to array.size(gann_trade_months) - 1
+            bool was_tp = array.get(gann_trade_was_tp, i)
+            float pts = array.get(gann_trade_points, i)
+            float loss_amt = pts * gann_option_multiplier * gann_lot_size
+            int month_val = array.get(gann_trade_months, i)
+            int year_val = array.get(gann_trade_years, i)
+            
+            array.push(all_trades_tp, was_tp)
+            array.push(all_trades_month, month_val)
+            array.push(all_trades_year, year_val)
+            array.push(all_trades_index, i)
+            array.push(all_trades_loss_amount, loss_amt)
+            array.push(all_trades_system, "GANN")
+    
+    if array.size(btst_trade_months) > 0
+        for i = 0 to array.size(btst_trade_months) - 1
+            bool was_tp = array.get(btst_trade_was_tp, i)
+            float pts = array.get(btst_trade_points, i)
+            float loss_amt = pts * btst_option_multiplier * btst_lot_size
+            int month_val = array.get(btst_trade_months, i)
+            int year_val = array.get(btst_trade_years, i)
+            
+            array.push(all_trades_tp, was_tp)
+            array.push(all_trades_month, month_val)
+            array.push(all_trades_year, year_val)
+            array.push(all_trades_index, i + 10000)
+            array.push(all_trades_loss_amount, loss_amt)
+            array.push(all_trades_system, "BTST")
+    
+    int n = array.size(all_trades_month)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - 2 - i
+                int year_j = array.get(all_trades_year, j)
+                int year_j1 = array.get(all_trades_year, j + 1)
+                int month_j = array.get(all_trades_month, j)
+                int month_j1 = array.get(all_trades_month, j + 1)
+                int idx_j = array.get(all_trades_index, j)
+                int idx_j1 = array.get(all_trades_index, j + 1)
+                
+                bool should_swap = false
+                
+                if year_j > year_j1
+                    should_swap := true
+                else if year_j == year_j1
+                    if month_j > month_j1
+                        should_swap := true
+                    else if month_j == month_j1
+                        if idx_j > idx_j1
+                            should_swap := true
+                
+                if should_swap
+                    array.set(all_trades_year, j, year_j1)
+                    array.set(all_trades_year, j + 1, year_j)
+                    array.set(all_trades_month, j, month_j1)
+                    array.set(all_trades_month, j + 1, month_j)
+                    array.set(all_trades_index, j, idx_j1)
+                    array.set(all_trades_index, j + 1, idx_j)
+                    
+                    bool temp_tp = array.get(all_trades_tp, j)
+                    array.set(all_trades_tp, j, array.get(all_trades_tp, j + 1))
+                    array.set(all_trades_tp, j + 1, temp_tp)
+                    
+                    float temp_loss = array.get(all_trades_loss_amount, j)
+                    array.set(all_trades_loss_amount, j, array.get(all_trades_loss_amount, j + 1))
+                    array.set(all_trades_loss_amount, j + 1, temp_loss)
+                    
+                    string temp_sys = array.get(all_trades_system, j)
+                    array.set(all_trades_system, j, array.get(all_trades_system, j + 1))
+                    array.set(all_trades_system, j + 1, temp_sys)
+    
+    if array.size(all_trades_tp) > 0
+        for i = 0 to array.size(all_trades_tp) - 1
+            bool is_tp = array.get(all_trades_tp, i)
+            float loss_amount = array.get(all_trades_loss_amount, i)
+            
+            if not is_tp
+                current_streak += 1
+                current_streak_points += loss_amount
+                
+                if current_streak > max_streak
+                    max_streak := current_streak
+                    max_streak_points := current_streak_points
+            else
+                current_streak := 0
+                current_streak_points := 0.0
+    
+    [max_streak, max_streak_points]
+
+if barstate.islast and cmb_show_performance_table
+    int current_month = month(time)
+    int current_year = year(time)
+    
+    var cmb_table = table.new(getTablePosition(cmb_table_position), 19, cmb_performance_months + 6, 
+                              bgcolor=color.new(color.black, 20), border_width=1)
+    
+    table.cell(cmb_table, 0, 0, 'Month', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    table.cell(cmb_table, 1, 0, 'G-TP', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 60))
+    table.cell(cmb_table, 2, 0, 'G-SL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 60))
+    table.cell(cmb_table, 3, 0, 'G-Pts', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.lime, 60))
+    table.cell(cmb_table, 4, 0, 'B-TP', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 60))
+    table.cell(cmb_table, 5, 0, 'B-SL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 60))
+    table.cell(cmb_table, 6, 0, 'B-Pts', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.aqua, 60))
+    table.cell(cmb_table, 7, 0, 'Net Pts', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 8, 0, 'WR%', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.teal, 60))
+    table.cell(cmb_table, 9, 0, 'PF', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.aqua, 60))
+    table.cell(cmb_table, 10, 0, 'G-PNL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.yellow, 60))
+    table.cell(cmb_table, 11, 0, 'B-PNL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.yellow, 60))
+    table.cell(cmb_table, 12, 0, 'Total PNL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.orange, 60))
+    table.cell(cmb_table, 13, 0, 'SL Streak', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 80))
+    table.cell(cmb_table, 14, 0, 'Streak ₹', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 80))
+    table.cell(cmb_table, 15, 0, 'Max Days', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.orange, 60))
+    table.cell(cmb_table, 16, 0, 'Max Loss', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 60))
+    table.cell(cmb_table, 17, 0, 'MS', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60), tooltip="Market Structure")
+    table.cell(cmb_table, 18, 0, 'ATR', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60), tooltip="ATR Filter")
+    
+    int grand_max_days = 0
+    float grand_max_loss = 0.0
+    int grand_max_sl_streak = 0
+    float grand_max_streak_loss = 0.0
+    
+    for i = 0 to cmb_performance_months - 1
+        int row = i + 1
+        int months_back = cmb_performance_months - 1 - i
+        int total_months = current_month - months_back
+        int target_year = current_year
+        int target_month = total_months
+        
+        while target_month <= 0
+            target_month := target_month + 12
+            target_year := target_year - 1
+        
+        int gann_tp = 0
+        int gann_sl = 0
+        float gann_tp_pts = 0.0
+        float gann_sl_pts = 0.0
+        int gann_max_days = 0
+        float gann_max_loss = 0.0
+        
+        if array.size(gann_trade_months) > 0
+            for j = 0 to array.size(gann_trade_months) - 1
+                if array.get(gann_trade_months, j) == target_month and array.get(gann_trade_years, j) == target_year
+                    bool was_tp = array.get(gann_trade_was_tp, j)
+                    float pts = array.get(gann_trade_points, j)
+                    int days = array.get(gann_trade_duration_days, j)
+                    
+                    if days > gann_max_days
+                        gann_max_days := days
+                    
+                    if was_tp
+                        gann_tp += 1
+                        gann_tp_pts += pts
+                    else
+                        gann_sl += 1
+                        gann_sl_pts += pts
+                        float loss_amt = pts * gann_option_multiplier * gann_lot_size
+                        if loss_amt > gann_max_loss
+                            gann_max_loss := loss_amt
+        
+        int btst_tp = 0
+        int btst_sl = 0
+        float btst_tp_pts = 0.0
+        float btst_sl_pts = 0.0
+        int btst_max_days = 0
+        float btst_max_loss = 0.0
+        
+        if array.size(btst_trade_months) > 0
+            for j = 0 to array.size(btst_trade_months) - 1
+                if array.get(btst_trade_months, j) == target_month and array.get(btst_trade_years, j) == target_year
+                    bool was_tp = array.get(btst_trade_was_tp, j)
+                    float pts = array.get(btst_trade_points, j)
+                    int bars = array.get(btst_trade_duration_bars, j)
+                    int days = barsToDays(bars)
+                    
+                    if days > btst_max_days
+                        btst_max_days := days
+                    
+                    if was_tp
+                        btst_tp += 1
+                        btst_tp_pts += pts
+                    else
+                        btst_sl += 1
+                        btst_sl_pts += pts
+                        float loss_amt = pts * btst_option_multiplier * btst_lot_size
+                        if loss_amt > btst_max_loss
+                            btst_max_loss := loss_amt
+        
+        [month_sl_streak, month_streak_loss] = calculateMonthSLStreak(target_month, target_year)
+        
+        if month_sl_streak > grand_max_sl_streak
+            grand_max_sl_streak := month_sl_streak
+            grand_max_streak_loss := month_streak_loss
+        
+        float gann_net = gann_tp_pts - gann_sl_pts
+        float btst_net = btst_tp_pts - btst_sl_pts
+        float combined_net = gann_net + btst_net
+        
+        int total_tp = gann_tp + btst_tp
+        int total_sl = gann_sl + btst_sl
+        float total_tp_pts = gann_tp_pts + btst_tp_pts
+        float total_sl_pts = gann_sl_pts + btst_sl_pts
+        
+        float win_rate = calculateWinRate(total_tp, total_sl)
+        float pf = total_sl_pts > 0 ? math.round(total_tp_pts / total_sl_pts, 2) : (total_tp_pts > 0 ? 999.99 : 0.0)
+        
+        float gann_pnl = math.round(gann_net * gann_option_multiplier * gann_lot_size)
+        float btst_pnl = math.round(btst_net * btst_option_multiplier * btst_lot_size)
+        float total_pnl = gann_pnl + btst_pnl
+        
+        int max_days = math.max(gann_max_days, btst_max_days)
+        float max_loss = math.max(gann_max_loss, btst_max_loss)
+        
+        if max_days > grand_max_days
+            grand_max_days := max_days
+        if max_loss > grand_max_loss
+            grand_max_loss := max_loss
+        
+        string month_name = getMonthNameWithYear(target_month, target_year)
+        
+        table.cell(cmb_table, 0, row, month_name, text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 1, row, str.tostring(gann_tp), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 2, row, str.tostring(gann_sl), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 3, row, str.tostring(math.round(gann_net)), text_color=color.white, text_size=size.normal, bgcolor=gann_net >= 0 ? color.new(color.green, 85) : color.new(color.red, 85))
+        table.cell(cmb_table, 4, row, str.tostring(btst_tp), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 5, row, str.tostring(btst_sl), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 6, row, str.tostring(math.round(btst_net)), text_color=color.white, text_size=size.normal, bgcolor=btst_net >= 0 ? color.new(color.green, 85) : color.new(color.red, 85))
+        table.cell(cmb_table, 7, row, str.tostring(math.round(combined_net)), text_color=color.white, text_size=size.normal, bgcolor=combined_net >= 0 ? color.new(color.green, 80) : color.new(color.red, 80))
+        table.cell(cmb_table, 8, row, str.tostring(win_rate) + "%", text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 9, row, str.tostring(pf), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 10, row, str.tostring(math.round(gann_pnl)), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 11, row, str.tostring(math.round(btst_pnl)), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 12, row, str.tostring(math.round(total_pnl)), text_color=color.white, text_size=size.normal, bgcolor=total_pnl >= 0 ? color.new(color.green, 80) : color.new(color.red, 80))
+        table.cell(cmb_table, 13, row, month_sl_streak > 0 ? str.tostring(month_sl_streak) : "-", text_color=color.white, text_size=size.normal, bgcolor=month_sl_streak >= 3 ? color.new(color.red, 80) : color.new(color.gray, 90))
+        table.cell(cmb_table, 14, row, month_sl_streak > 0 ? "₹" + str.tostring(math.round(month_streak_loss)) : "-", text_color=color.white, text_size=size.normal, bgcolor=month_streak_loss > 50000 ? color.new(color.red, 80) : color.new(color.gray, 90))
+        table.cell(cmb_table, 15, row, max_days > 0 ? str.tostring(max_days) : "-", text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 16, row, max_loss > 0 ? "₹" + str.tostring(math.round(max_loss)) : "-", text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 17, row, enable_market_structure ? "ON" : "OFF", text_color=color.white, text_size=size.normal, bgcolor=enable_market_structure ? color.new(color.blue, 70) : color.new(color.gray, 70))
+        table.cell(cmb_table, 18, row, gann_enable_atr_filter ? str.tostring(gann_min_atr_multiplier) + "x" : "OFF", text_color=color.white, text_size=size.normal, bgcolor=gann_enable_atr_filter ? color.new(color.purple, 70) : color.new(color.gray, 70))
+    
+    [global_max_streak, global_max_loss] = calculateGlobalMaxSLStreak()
+    
+    if global_max_streak > grand_max_sl_streak
+        grand_max_sl_streak := global_max_streak
+        grand_max_streak_loss := global_max_loss
+    
+    int total_row = cmb_performance_months + 1
+    
+    float grand_gann_pnl_all = 0.0
+    int grand_gann_tp_all = 0
+    int grand_gann_sl_all = 0
+    float grand_gann_tp_pts_all = 0.0
+    float grand_gann_sl_pts_all = 0.0
+    
+    if array.size(gann_trade_points) > 0
+        for j = 0 to array.size(gann_trade_points) - 1
+            float pts = array.get(gann_trade_points, j)
+            bool is_winner = array.get(gann_trade_was_tp, j)
+            float signed_pts = is_winner ? pts : -pts
+            grand_gann_pnl_all += signed_pts * gann_option_multiplier * gann_lot_size
+            
+            if is_winner
+                grand_gann_tp_all += 1
+                grand_gann_tp_pts_all += pts
+            else
+                grand_gann_sl_all += 1
+                grand_gann_sl_pts_all += pts
+    
+    float grand_btst_pnl_all = 0.0
+    int grand_btst_tp_all = 0
+    int grand_btst_sl_all = 0
+    float grand_btst_tp_pts_all = 0.0
+    float grand_btst_sl_pts_all = 0.0
+    
+    if array.size(btst_trade_points) > 0
+        for j = 0 to array.size(btst_trade_points) - 1
+            float pts = array.get(btst_trade_points, j)
+            bool is_winner = array.get(btst_trade_was_tp, j)
+            float signed_pts = is_winner ? pts : -pts
+            grand_btst_pnl_all += signed_pts * btst_option_multiplier * btst_lot_size
+            
+            if is_winner
+                grand_btst_tp_all += 1
+                grand_btst_tp_pts_all += pts
+            else
+                grand_btst_sl_all += 1
+                grand_btst_sl_pts_all += pts
+    
+    float grand_total_pnl_all = grand_gann_pnl_all + grand_btst_pnl_all
+    float grand_gann_pts_all = grand_gann_pnl_all / (gann_option_multiplier * gann_lot_size)
+    float grand_btst_pts_all = grand_btst_pnl_all / (btst_option_multiplier * btst_lot_size)
+    float grand_combined_net_all = grand_gann_pts_all + grand_btst_pts_all
+    
+    int grand_total_tp_all = grand_gann_tp_all + grand_btst_tp_all
+    int grand_total_sl_all = grand_gann_sl_all + grand_btst_sl_all
+    float grand_win_rate_all = calculateWinRate(grand_total_tp_all, grand_total_sl_all)
+    
+    float grand_total_tp_pts_all = grand_gann_tp_pts_all + grand_btst_tp_pts_all
+    float grand_total_sl_pts_all = grand_gann_sl_pts_all + grand_btst_sl_pts_all
+    float grand_pf_all = grand_total_sl_pts_all > 0 ? math.round(grand_total_tp_pts_all / grand_total_sl_pts_all, 2) : (grand_total_tp_pts_all > 0 ? 999.99 : 0.0)
+    
+    table.cell(cmb_table, 0, total_row, 'TOTAL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 1, total_row, str.tostring(grand_gann_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 2, total_row, str.tostring(grand_gann_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 3, total_row, str.tostring(math.round(grand_gann_pts_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 4, total_row, str.tostring(grand_btst_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 5, total_row, str.tostring(grand_btst_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 6, total_row, str.tostring(math.round(grand_btst_pts_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 7, total_row, str.tostring(math.round(grand_combined_net_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 8, total_row, str.tostring(grand_win_rate_all) + "%", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 9, total_row, str.tostring(grand_pf_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 10, total_row, str.tostring(math.round(grand_gann_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 11, total_row, str.tostring(math.round(grand_btst_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 12, total_row, str.tostring(math.round(grand_total_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 13, total_row, str.tostring(grand_max_sl_streak), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 14, total_row, "₹" + str.tostring(math.round(grand_max_streak_loss)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 15, total_row, str.tostring(grand_max_days), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 16, total_row, "₹" + str.tostring(math.round(grand_max_loss)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 17, total_row, enable_market_structure ? "ON" : "OFF", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 18, total_row, gann_enable_atr_filter ? str.tostring(gann_min_atr_multiplier) + "x" : "OFF", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    
+    int gann_row = cmb_performance_months + 2
+    float gann_wr = calculateWinRate(grand_gann_tp_all, grand_gann_sl_all)
+    
+    table.cell(cmb_table, 0, gann_row, 'GANN', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 60))
+    table.cell(cmb_table, 1, gann_row, 'TP:' + str.tostring(grand_gann_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 70))
+    table.cell(cmb_table, 2, gann_row, 'SL:' + str.tostring(grand_gann_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 70))
+    table.cell(cmb_table, 3, gann_row, 'WR:' + str.tostring(gann_wr) + "%", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 70))
+    table.cell(cmb_table, 4, gann_row, 'Enabled:' + (enable_gann ? "✓" : "✗"), text_color=color.white, text_size=size.normal, bgcolor=enable_gann ? color.new(color.green, 70) : color.new(color.red, 70))
+    table.cell(cmb_table, 5, gann_row, 'MS:' + (enable_market_structure ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=enable_market_structure ? color.new(color.blue, 70) : color.new(color.gray, 70))
+    table.cell(cmb_table, 6, gann_row, 'ATR:' + (gann_enable_atr_filter ? str.tostring(gann_min_atr_multiplier) + "x" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=gann_enable_atr_filter ? color.new(color.purple, 70) : color.new(color.gray, 70))
+    
+    string gann_status = gann_TRADE_ACTIVE ? (gann_TRADE_DIR == 1 ? "LONG" : "SHORT") : "NO TRADE"
+    table.cell(cmb_table, 7, gann_row, 'Status:' + gann_status, text_color=color.white, text_size=size.normal, bgcolor=gann_TRADE_ACTIVE ? color.new(color.orange, 60) : color.new(color.gray, 70))
+    
+    int btst_row = cmb_performance_months + 3
+    float btst_wr = calculateWinRate(grand_btst_tp_all, grand_btst_sl_all)
+    
+    table.cell(cmb_table, 0, btst_row, 'BTST', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    table.cell(cmb_table, 1, btst_row, 'TP:' + str.tostring(grand_btst_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 70))
+    table.cell(cmb_table, 2, btst_row, 'SL:' + str.tostring(grand_btst_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 70))
+    table.cell(cmb_table, 3, btst_row, 'WR:' + str.tostring(btst_wr) + "%", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 70))
+    table.cell(cmb_table, 4, btst_row, 'Enabled:' + (enable_btst ? "✓" : "✗"), text_color=color.white, text_size=size.normal, bgcolor=enable_btst ? color.new(color.green, 70) : color.new(color.red, 70))
+    
+    string btst_status = btst_in_trade ? btst_current_trade_type : "NO TRADE"
+    table.cell(cmb_table, 5, btst_row, 'Status:' + btst_status, text_color=color.white, text_size=size.normal, bgcolor=btst_in_trade ? color.new(color.orange, 60) : color.new(color.gray, 70))
+    
+    int priority_row = cmb_performance_months + 4
+    table.cell(cmb_table, 0, priority_row, 'PRIORITY', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.gray, 60))
+    table.cell(cmb_table, 1, priority_row, trade_priority, text_color=color.white, text_size=size.normal, bgcolor=color.new(color.gray, 70))
+    table.cell(cmb_table, 2, priority_row, 'User:tradeskishor', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.navy, 70))
+    
+    int conf_row = cmb_performance_months + 5
+    table.cell(cmb_table, 0, conf_row, 'BTST CONF', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.orange, 60))
+    table.cell(cmb_table, 1, conf_row, 'VWAP:' + (btst_enable_vwap_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_vwap_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
+    table.cell(cmb_table, 2, conf_row, 'EMA:' + (btst_enable_ema_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_ema_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
+    table.cell(cmb_table, 3, conf_row, 'VOL:' + (btst_enable_volume_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_volume_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
