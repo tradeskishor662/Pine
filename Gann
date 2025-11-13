@@ -248,7 +248,7 @@ gann_cpr_use_previous_day = input.bool(true, "Use Previous Day for CPR", group=g
      tooltip="Use previous day's H/L/C for CPR calculation (recommended for next-day trading)")
 gann_enable_cpr_width_filter = input.bool(false, "Enable CPR Width Filter", group=g_gann_cpr,
      tooltip="Only take trades when CPR width (TC - BC distance) is within specified maximum")
-gann_max_cpr_width = input.float(50.0, "Maximum CPR Width (Points)", minval=0.0, step=5.0, group=g_gann_cpr,
+gann_max_cpr_width = input.float(50.0, "Maximum CPR Width (Points)", minval=0.0, step=1.0, group=g_gann_cpr,
      tooltip="Maximum allowed distance between TC and BC in points\nTrades rejected if CPR width exceeds this value")
 
 g_gann_detection = "🎯 GANN: TP/SL Detection Settings"
@@ -878,7 +878,7 @@ if gann_TRADE_ACTIVE
             array.push(gann_trade_points, math.abs(pts))
             array.push(gann_trade_duration_days, days_in_trade)
             array.push(gann_trade_direction, 1)
-            array.push(gann_trade_exit_type, exit_array.push(gann_trade_exit_type, exit_reason) 
+            array.push(gann_trade_exit_type, exit_reason)
             
             bool isTP = str.contains(exit_reason, "TP") or exit_reason == "TSL"
             float label_y = isTP ? f_gann_label_y_exit_tp_buy(gann_EXIT_PRICE) : f_gann_label_y_exit_sl_buy(gann_EXIT_PRICE)
@@ -1086,13 +1086,15 @@ plot(gann_ShowSlvl ? gann_St3 : na, "GANN TP3", color=gann_TPColor3, linewidth=1
 plot(gann_ShowSlvl ? gann_St4 : na, "GANN TP4", color=gann_TPColor4, linewidth=1, style=plot.style_linebr)
 plot(gann_ShowSlvl ? gann_Ssl : na, "GANN Sell SL", color=gann_SLColor, linewidth=2, style=plot.style_linebr)
 
+
+
 // ════════════════════════════════════════════════════════════════════
 // BTST SYSTEM - ENTRY LOGIC
 // ════════════════════════════════════════════════════════════════════
 
-bool new_day = ta.change(time('D'))
+bool is_new_day = ta.change(time('D')) != 0
 
-if new_day
+if is_new_day
     btst_day_high := high
     btst_day_low := low
 else
@@ -1101,8 +1103,8 @@ else
 
 float prev_day_close = request.security(syminfo.tickerid, 'D', close[1], lookahead=barmerge.lookahead_on)
 
-bool is_gap_up = new_day and open > prev_day_close
-bool is_gap_down = new_day and open < prev_day_close
+bool is_gap_up = is_new_day and open > prev_day_close
+bool is_gap_down = is_new_day and open < prev_day_close
 
 float gap_percent_up = is_gap_up ? ((open - prev_day_close) / prev_day_close) * 100 : 0
 float gap_percent_down = is_gap_down ? ((prev_day_close - open) / prev_day_close) * 100 : 0
@@ -1255,143 +1257,482 @@ if btst_in_trade
         btst_in_trade := false
         btst_current_trade_type := ""
 
-// ════════════════════════════════════════════════════════════════════
-// COMBINED PERFORMANCE TABLE
-// ════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
+// COMBINED PERFORMANCE TABLE WITH SL STREAK TRACKING
+// ═════════════════════════════════════════════════════════════════════════════
 
-if cmb_show_performance_table and barstate.islast
-    var table perf_table = na
-    table.delete(perf_table)
+getTablePosition(string pos) =>
+    switch pos
+        "top_left" => position.top_left
+        "top_center" => position.top_center
+        "top_right" => position.top_right
+        "middle_left" => position.middle_left
+        "middle_center" => position.middle_center
+        "middle_right" => position.middle_right
+        "bottom_left" => position.bottom_left
+        "bottom_center" => position.bottom_center
+        "bottom_right" => position.bottom_right
+        => position.top_right
+
+getMonthNameWithYear(int m, int y) =>
+    string month_name = switch m
+        1 => "Jan"
+        2 => "Feb"
+        3 => "Mar"
+        4 => "Apr"
+        5 => "May"
+        6 => "Jun"
+        7 => "Jul"
+        8 => "Aug"
+        9 => "Sep"
+        10 => "Oct"
+        11 => "Nov"
+        12 => "Dec"
+        => "Unknown"
+    month_name + " " + str.tostring(y)
+
+calculateWinRate(int tp_trades, int sl_trades) =>
+    int total_trades = tp_trades + sl_trades
+    total_trades > 0 ? math.round((tp_trades / total_trades) * 100, 2) : 0.0
+
+calculateMonthSLStreak(int target_month, int target_year) =>
+    int max_streak = 0
+    int current_streak = 0
+    float max_streak_points = 0.0
+    float current_streak_points = 0.0
     
-    string pos = cmb_table_position
-    position table_pos = position.top_right
+    array<bool> all_trades_tp = array.new_bool()
+    array<float> all_trades_pts = array.new_float()
+    array<int> all_trades_timestamp = array.new_int()
+    array<float> all_trades_loss_amount = array.new_float()
     
-    if pos == "top_left"
-        table_pos := position.top_left
-    else if pos == "top_center"
-        table_pos := position.top_center
-    else if pos == "top_right"
-        table_pos := position.top_right
-    else if pos == "middle_left"
-        table_pos := position.middle_left
-    else if pos == "middle_center"
-        table_pos := position.middle_center
-    else if pos == "middle_right"
-        table_pos := position.middle_right
-    else if pos == "bottom_left"
-        table_pos := position.bottom_left
-    else if pos == "bottom_center"
-        table_pos := position.bottom_center
-    else if pos == "bottom_right"
-        table_pos := position.bottom_right
+    if array.size(gann_trade_months) > 0
+        for i = 0 to array.size(gann_trade_months) - 1
+            if array.get(gann_trade_months, i) == target_month and array.get(gann_trade_years, i) == target_year
+                bool was_tp = array.get(gann_trade_was_tp, i)
+                float pts = array.get(gann_trade_points, i)
+                float loss_amt = pts * gann_option_multiplier * gann_lot_size
+                
+                array.push(all_trades_tp, was_tp)
+                array.push(all_trades_pts, pts)
+                array.push(all_trades_timestamp, i * 2)
+                array.push(all_trades_loss_amount, loss_amt)
     
-    perf_table := table.new(table_pos, 8, 50, bgcolor=color.new(color.black, 80), border_width=2, border_color=color.new(color.gray, 50))
+    if array.size(btst_trade_months) > 0
+        for i = 0 to array.size(btst_trade_months) - 1
+            if array.get(btst_trade_months, i) == target_month and array.get(btst_trade_years, i) == target_year
+                bool was_tp = array.get(btst_trade_was_tp, i)
+                float pts = array.get(btst_trade_points, i)
+                float loss_amt = pts * btst_option_multiplier * btst_lot_size
+                
+                array.push(all_trades_tp, was_tp)
+                array.push(all_trades_pts, pts)
+                array.push(all_trades_timestamp, i * 2 + 1)
+                array.push(all_trades_loss_amount, loss_amt)
     
-    // Headers
-    table.cell(perf_table, 0, 0, "System", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
-    table.cell(perf_table, 1, 0, "Month", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
-    table.cell(perf_table, 2, 0, "Trades", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
-    table.cell(perf_table, 3, 0, "Win", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
-    table.cell(perf_table, 4, 0, "Loss", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
-    table.cell(perf_table, 5, 0, "Win%", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
-    table.cell(perf_table, 6, 0, "Points", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
-    table.cell(perf_table, 7, 0, "PNL", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
+    int n = array.size(all_trades_timestamp)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - 2 - i
+                if array.get(all_trades_timestamp, j) > array.get(all_trades_timestamp, j + 1)
+                    int temp_ts = array.get(all_trades_timestamp, j)
+                    array.set(all_trades_timestamp, j, array.get(all_trades_timestamp, j + 1))
+                    array.set(all_trades_timestamp, j + 1, temp_ts)
+                    
+                    bool temp_tp = array.get(all_trades_tp, j)
+                    array.set(all_trades_tp, j, array.get(all_trades_tp, j + 1))
+                    array.set(all_trades_tp, j + 1, temp_tp)
+                    
+                    float temp_pts = array.get(all_trades_pts, j)
+                    array.set(all_trades_pts, j, array.get(all_trades_pts, j + 1))
+                    array.set(all_trades_pts, j + 1, temp_pts)
+                    
+                    float temp_loss = array.get(all_trades_loss_amount, j)
+                    array.set(all_trades_loss_amount, j, array.get(all_trades_loss_amount, j + 1))
+                    array.set(all_trades_loss_amount, j + 1, temp_loss)
     
+    if array.size(all_trades_tp) > 0
+        for i = 0 to array.size(all_trades_tp) - 1
+            bool is_tp = array.get(all_trades_tp, i)
+            float loss_amount = array.get(all_trades_loss_amount, i)
+            
+            if not is_tp
+                current_streak += 1
+                current_streak_points += loss_amount
+                
+                if current_streak > max_streak
+                    max_streak := current_streak
+                    max_streak_points := current_streak_points
+            else
+                current_streak := 0
+                current_streak_points := 0.0
+    
+    [max_streak, max_streak_points]
+
+calculateGlobalMaxSLStreak() =>
+    int max_streak = 0
+    int current_streak = 0
+    float max_streak_points = 0.0
+    float current_streak_points = 0.0
+    
+    array<bool> all_trades_tp = array.new_bool()
+    array<int> all_trades_month = array.new_int()
+    array<int> all_trades_year = array.new_int()
+    array<int> all_trades_index = array.new_int()
+    array<float> all_trades_loss_amount = array.new_float()
+    array<string> all_trades_system = array.new_string()
+    
+    if array.size(gann_trade_months) > 0
+        for i = 0 to array.size(gann_trade_months) - 1
+            bool was_tp = array.get(gann_trade_was_tp, i)
+            float pts = array.get(gann_trade_points, i)
+            float loss_amt = pts * gann_option_multiplier * gann_lot_size
+            int month_val = array.get(gann_trade_months, i)
+            int year_val = array.get(gann_trade_years, i)
+            
+            array.push(all_trades_tp, was_tp)
+            array.push(all_trades_month, month_val)
+            array.push(all_trades_year, year_val)
+            array.push(all_trades_index, i)
+            array.push(all_trades_loss_amount, loss_amt)
+            array.push(all_trades_system, "GANN")
+    
+    if array.size(btst_trade_months) > 0
+        for i = 0 to array.size(btst_trade_months) - 1
+            bool was_tp = array.get(btst_trade_was_tp, i)
+            float pts = array.get(btst_trade_points, i)
+            float loss_amt = pts * btst_option_multiplier * btst_lot_size
+            int month_val = array.get(btst_trade_months, i)
+            int year_val = array.get(btst_trade_years, i)
+            
+            array.push(all_trades_tp, was_tp)
+            array.push(all_trades_month, month_val)
+            array.push(all_trades_year, year_val)
+            array.push(all_trades_index, i + 10000)
+            array.push(all_trades_loss_amount, loss_amt)
+            array.push(all_trades_system, "BTST")
+    
+    int n = array.size(all_trades_month)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - 2 - i
+                int year_j = array.get(all_trades_year, j)
+                int year_j1 = array.get(all_trades_year, j + 1)
+                int month_j = array.get(all_trades_month, j)
+                int month_j1 = array.get(all_trades_month, j + 1)
+                int idx_j = array.get(all_trades_index, j)
+                int idx_j1 = array.get(all_trades_index, j + 1)
+                
+                bool should_swap = false
+                
+                if year_j > year_j1
+                    should_swap := true
+                else if year_j == year_j1
+                    if month_j > month_j1
+                        should_swap := true
+                    else if month_j == month_j1
+                        if idx_j > idx_j1
+                            should_swap := true
+                
+                if should_swap
+                    array.set(all_trades_year, j, year_j1)
+                    array.set(all_trades_year, j + 1, year_j)
+                    array.set(all_trades_month, j, month_j1)
+                    array.set(all_trades_month, j + 1, month_j)
+                    array.set(all_trades_index, j, idx_j1)
+                    array.set(all_trades_index, j + 1, idx_j)
+                    
+                    bool temp_tp = array.get(all_trades_tp, j)
+                    array.set(all_trades_tp, j, array.get(all_trades_tp, j + 1))
+                    array.set(all_trades_tp, j + 1, temp_tp)
+                    
+                    float temp_loss = array.get(all_trades_loss_amount, j)
+                    array.set(all_trades_loss_amount, j, array.get(all_trades_loss_amount, j + 1))
+                    array.set(all_trades_loss_amount, j + 1, temp_loss)
+                    
+                    string temp_sys = array.get(all_trades_system, j)
+                    array.set(all_trades_system, j, array.get(all_trades_system, j + 1))
+                    array.set(all_trades_system, j + 1, temp_sys)
+    
+    if array.size(all_trades_tp) > 0
+        for i = 0 to array.size(all_trades_tp) - 1
+            bool is_tp = array.get(all_trades_tp, i)
+            float loss_amount = array.get(all_trades_loss_amount, i)
+            
+            if not is_tp
+                current_streak += 1
+                current_streak_points += loss_amount
+                
+                if current_streak > max_streak
+                    max_streak := current_streak
+                    max_streak_points := current_streak_points
+            else
+                current_streak := 0
+                current_streak_points := 0.0
+    
+    [max_streak, max_streak_points]
+
+if barstate.islast and cmb_show_performance_table
     int current_month = month(time)
     int current_year = year(time)
-    int row = 1
+    
+    var cmb_table = table.new(getTablePosition(cmb_table_position), 19, cmb_performance_months + 6, 
+                              bgcolor=color.new(color.black, 20), border_width=1)
+    
+    table.cell(cmb_table, 0, 0, 'Month', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    table.cell(cmb_table, 1, 0, 'G-TP', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 60))
+    table.cell(cmb_table, 2, 0, 'G-SL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 60))
+    table.cell(cmb_table, 3, 0, 'G-Pts', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.lime, 60))
+    table.cell(cmb_table, 4, 0, 'B-TP', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 60))
+    table.cell(cmb_table, 5, 0, 'B-SL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 60))
+    table.cell(cmb_table, 6, 0, 'B-Pts', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.aqua, 60))
+    table.cell(cmb_table, 7, 0, 'Net Pts', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 8, 0, 'WR%', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.teal, 60))
+    table.cell(cmb_table, 9, 0, 'PF', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.aqua, 60))
+    table.cell(cmb_table, 10, 0, 'G-PNL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.yellow, 60))
+    table.cell(cmb_table, 11, 0, 'B-PNL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.yellow, 60))
+    table.cell(cmb_table, 12, 0, 'Total PNL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.orange, 60))
+    table.cell(cmb_table, 13, 0, 'SL Streak', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 80))
+    table.cell(cmb_table, 14, 0, 'Streak ₹', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 80))
+    table.cell(cmb_table, 15, 0, 'Max Days', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.orange, 60))
+    table.cell(cmb_table, 16, 0, 'Max Loss', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 60))
+    table.cell(cmb_table, 17, 0, 'MS', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60), tooltip="Market Structure")
+    table.cell(cmb_table, 18, 0, 'ATR', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60), tooltip="ATR Filter")
+    
+    int grand_max_days = 0
+    float grand_max_loss = 0.0
+    int grand_max_sl_streak = 0
+    float grand_max_streak_loss = 0.0
     
     for i = 0 to cmb_performance_months - 1
-        int target_month = current_month - i
+        int row = i + 1
+        int months_back = cmb_performance_months - 1 - i
+        int total_months = current_month - months_back
         int target_year = current_year
+        int target_month = total_months
         
-        while target_month < 1
-            target_month += 12
-            target_year -= 1
+        while target_month <= 0
+            target_month := target_month + 12
+            target_year := target_year - 1
         
-        // GANN Stats
-        int gann_count = 0
-        int gann_wins = 0
-        int gann_losses = 0
-        float gann_total_points = 0.0
+        int gann_tp = 0
+        int gann_sl = 0
+        float gann_tp_pts = 0.0
+        float gann_sl_pts = 0.0
+        int gann_max_days = 0
+        float gann_max_loss = 0.0
         
         if array.size(gann_trade_months) > 0
             for j = 0 to array.size(gann_trade_months) - 1
                 if array.get(gann_trade_months, j) == target_month and array.get(gann_trade_years, j) == target_year
-                    gann_count += 1
-                    float pts = array.get(gann_trade_points, j)
                     bool was_tp = array.get(gann_trade_was_tp, j)
+                    float pts = array.get(gann_trade_points, j)
+                    int days = array.get(gann_trade_duration_days, j)
+                    
+                    if days > gann_max_days
+                        gann_max_days := days
                     
                     if was_tp
-                        gann_wins += 1
-                        gann_total_points += pts
+                        gann_tp += 1
+                        gann_tp_pts += pts
                     else
-                        gann_losses += 1
-                        gann_total_points -= pts
+                        gann_sl += 1
+                        gann_sl_pts += pts
+                        float loss_amt = pts * gann_option_multiplier * gann_lot_size
+                        if loss_amt > gann_max_loss
+                            gann_max_loss := loss_amt
         
-        // BTST Stats
-        int btst_count = 0
-        int btst_wins = 0
-        int btst_losses = 0
-        float btst_total_points = 0.0
+        int btst_tp = 0
+        int btst_sl = 0
+        float btst_tp_pts = 0.0
+        float btst_sl_pts = 0.0
+        int btst_max_days = 0
+        float btst_max_loss = 0.0
         
         if array.size(btst_trade_months) > 0
             for j = 0 to array.size(btst_trade_months) - 1
                 if array.get(btst_trade_months, j) == target_month and array.get(btst_trade_years, j) == target_year
-                    btst_count += 1
-                    float pts = array.get(btst_trade_points, j)
                     bool was_tp = array.get(btst_trade_was_tp, j)
+                    float pts = array.get(btst_trade_points, j)
+                    int bars = array.get(btst_trade_duration_bars, j)
+                    int days = barsToDays(bars)
+                    
+                    if days > btst_max_days
+                        btst_max_days := days
                     
                     if was_tp
-                        btst_wins += 1
-                        btst_total_points += pts
+                        btst_tp += 1
+                        btst_tp_pts += pts
                     else
-                        btst_losses += 1
-                        btst_total_points -= pts
+                        btst_sl += 1
+                        btst_sl_pts += pts
+                        float loss_amt = pts * btst_option_multiplier * btst_lot_size
+                        if loss_amt > btst_max_loss
+                            btst_max_loss := loss_amt
         
-        string month_str = str.tostring(target_year) + "-" + str.format("{0,number,00}", target_month)
+        [month_sl_streak, month_streak_loss] = calculateMonthSLStreak(target_month, target_year)
         
-        // GANN Row
-        if gann_count > 0
-            float gann_win_rate = gann_count > 0 ? (gann_wins / gann_count) * 100 : 0
-            float gann_pnl = gann_total_points * gann_option_multiplier * gann_lot_size
-            color gann_pnl_color = gann_total_points > 0 ? color.new(color.green, 70) : color.new(color.red, 70)
+        if month_sl_streak > grand_max_sl_streak
+            grand_max_sl_streak := month_sl_streak
+            grand_max_streak_loss := month_streak_loss
+        
+        float gann_net = gann_tp_pts - gann_sl_pts
+        float btst_net = btst_tp_pts - btst_sl_pts
+        float combined_net = gann_net + btst_net
+        
+        int total_tp = gann_tp + btst_tp
+        int total_sl = gann_sl + btst_sl
+        float total_tp_pts = gann_tp_pts + btst_tp_pts
+        float total_sl_pts = gann_sl_pts + btst_sl_pts
+        
+        float win_rate = calculateWinRate(total_tp, total_sl)
+        float pf = total_sl_pts > 0 ? math.round(total_tp_pts / total_sl_pts, 2) : (total_tp_pts > 0 ? 999.99 : 0.0)
+        
+        float gann_pnl = math.round(gann_net * gann_option_multiplier * gann_lot_size)
+        float btst_pnl = math.round(btst_net * btst_option_multiplier * btst_lot_size)
+        float total_pnl = gann_pnl + btst_pnl
+        
+        int max_days = math.max(gann_max_days, btst_max_days)
+        float max_loss = math.max(gann_max_loss, btst_max_loss)
+        
+        if max_days > grand_max_days
+            grand_max_days := max_days
+        if max_loss > grand_max_loss
+            grand_max_loss := max_loss
+        
+        string month_name = getMonthNameWithYear(target_month, target_year)
+        
+        table.cell(cmb_table, 0, row, month_name, text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 1, row, str.tostring(gann_tp), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 2, row, str.tostring(gann_sl), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 3, row, str.tostring(math.round(gann_net)), text_color=color.white, text_size=size.normal, bgcolor=gann_net >= 0 ? color.new(color.green, 85) : color.new(color.red, 85))
+        table.cell(cmb_table, 4, row, str.tostring(btst_tp), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 5, row, str.tostring(btst_sl), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 6, row, str.tostring(math.round(btst_net)), text_color=color.white, text_size=size.normal, bgcolor=btst_net >= 0 ? color.new(color.green, 85) : color.new(color.red, 85))
+        table.cell(cmb_table, 7, row, str.tostring(math.round(combined_net)), text_color=color.white, text_size=size.normal, bgcolor=combined_net >= 0 ? color.new(color.green, 80) : color.new(color.red, 80))
+        table.cell(cmb_table, 8, row, str.tostring(win_rate) + "%", text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 9, row, str.tostring(pf), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 10, row, str.tostring(math.round(gann_pnl)), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 11, row, str.tostring(math.round(btst_pnl)), text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 12, row, str.tostring(math.round(total_pnl)), text_color=color.white, text_size=size.normal, bgcolor=total_pnl >= 0 ? color.new(color.green, 80) : color.new(color.red, 80))
+        table.cell(cmb_table, 13, row, month_sl_streak > 0 ? str.tostring(month_sl_streak) : "-", text_color=color.white, text_size=size.normal, bgcolor=month_sl_streak >= 3 ? color.new(color.red, 80) : color.new(color.gray, 90))
+        table.cell(cmb_table, 14, row, month_sl_streak > 0 ? "₹" + str.tostring(math.round(month_streak_loss)) : "-", text_color=color.white, text_size=size.normal, bgcolor=month_streak_loss > 50000 ? color.new(color.red, 80) : color.new(color.gray, 90))
+        table.cell(cmb_table, 15, row, max_days > 0 ? str.tostring(max_days) : "-", text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 16, row, max_loss > 0 ? "₹" + str.tostring(math.round(max_loss)) : "-", text_color=color.white, text_size=size.normal)
+        table.cell(cmb_table, 17, row, enable_market_structure ? "ON" : "OFF", text_color=color.white, text_size=size.normal, bgcolor=enable_market_structure ? color.new(color.blue, 70) : color.new(color.gray, 70))
+    
+    [global_max_streak, global_max_loss] = calculateGlobalMaxSLStreak()
+    
+    if global_max_streak > grand_max_sl_streak
+        grand_max_sl_streak := global_max_streak
+        grand_max_streak_loss := global_max_loss
+    
+    int total_row = cmb_performance_months + 1
+    
+    float grand_gann_pnl_all = 0.0
+    int grand_gann_tp_all = 0
+    int grand_gann_sl_all = 0
+    float grand_gann_tp_pts_all = 0.0
+    float grand_gann_sl_pts_all = 0.0
+    
+    if array.size(gann_trade_points) > 0
+        for j = 0 to array.size(gann_trade_points) - 1
+            float pts = array.get(gann_trade_points, j)
+            bool is_winner = array.get(gann_trade_was_tp, j)
+            float signed_pts = is_winner ? pts : -pts
+            grand_gann_pnl_all += signed_pts * gann_option_multiplier * gann_lot_size
             
-            table.cell(perf_table, 0, row, "GANN", bgcolor=color.new(color.purple, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 1, row, month_str, bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 2, row, str.tostring(gann_count), bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 3, row, str.tostring(gann_wins), bgcolor=color.new(color.green, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 4, row, str.tostring(gann_losses), bgcolor=color.new(color.red, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 5, row, str.tostring(math.round(gann_win_rate, 1)) + "%", bgcolor=color.new(color.blue, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 6, row, str.tostring(math.round(gann_total_points, 2)), bgcolor=gann_pnl_color, text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 7, row, str.tostring(math.round(gann_pnl, 0)), bgcolor=gann_pnl_color, text_color=color.white, text_size=size.small)
-            row += 1
-        
-        // BTST Row
-        if btst_count > 0
-            float btst_win_rate = btst_count > 0 ? (btst_wins / btst_count) * 100 : 0
-            float btst_pnl = btst_total_points * btst_option_multiplier * btst_lot_size
-            color btst_pnl_color = btst_total_points > 0 ? color.new(color.green, 70) : color.new(color.red, 70)
+            if is_winner
+                grand_gann_tp_all += 1
+                grand_gann_tp_pts_all += pts
+            else
+                grand_gann_sl_all += 1
+                grand_gann_sl_pts_all += pts
+    
+    float grand_btst_pnl_all = 0.0
+    int grand_btst_tp_all = 0
+    int grand_btst_sl_all = 0
+    float grand_btst_tp_pts_all = 0.0
+    float grand_btst_sl_pts_all = 0.0
+    
+    if array.size(btst_trade_points) > 0
+        for j = 0 to array.size(btst_trade_points) - 1
+            float pts = array.get(btst_trade_points, j)
+            bool is_winner = array.get(btst_trade_was_tp, j)
+            float signed_pts = is_winner ? pts : -pts
+            grand_btst_pnl_all += signed_pts * btst_option_multiplier * btst_lot_size
             
-            table.cell(perf_table, 0, row, "BTST", bgcolor=color.new(color.orange, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 1, row, month_str, bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 2, row, str.tostring(btst_count), bgcolor=color.new(color.gray, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 3, row, str.tostring(btst_wins), bgcolor=color.new(color.green, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 4, row, str.tostring(btst_losses), bgcolor=color.new(color.red, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 5, row, str.tostring(math.round(btst_win_rate, 1)) + "%", bgcolor=color.new(color.blue, 80), text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 6, row, str.tostring(math.round(btst_total_points, 2)), bgcolor=btst_pnl_color, text_color=color.white, text_size=size.small)
-            table.cell(perf_table, 7, row, str.tostring(math.round(btst_pnl, 0)), bgcolor=btst_pnl_color, text_color=color.white, text_size=size.small)
-            row += 1
-
-// ════════════════════════════════════════════════════════════════════
-// ALERTS
-// ════════════════════════════════════════════════════════════════════
-
-alertcondition(gann_ALERT_BUY_FIRED and not gann_ALERT_BUY_FIRED[1], "GANN Buy Entry", "GANN BUY signal at {{close}}")
-alertcondition(gann_ALERT_SELL_FIRED and not gann_ALERT_SELL_FIRED[1], "GANN Sell Entry", "GANN SELL signal at {{close}}")
-alertcondition(gann_ALERT_TP1_FIRED and not gann_ALERT_TP1_FIRED[1], "GANN TP1 Hit", "GANN TP1 reached")
-alertcondition(gann_ALERT_TP2_FIRED and not gann_ALERT_TP2_FIRED[1], "GANN TP2 Hit", "GANN TP2 reached")
-alertcondition(gann_ALERT_TP3_FIRED and not gann_ALERT_TP3_FIRED[1], "GANN TP3 Hit", "GANN TP3 reached")
-alertcondition(gann_ALERT_TP4_FIRED and not gann_ALERT_TP4_FIRED[1], "GANN TP4 Hit", "GANN TP4 reached")
-alertcondition(gann_ALERT_SL_FIRED and not gann_ALERT_SL_FIRED[1], "GANN SL Hit", "GANN Stop Loss hit")
-alertcondition(gann_ALERT_TSL_FIRED and not gann_ALERT_TSL_FIRED[1], "GANN Trailing SL Hit", "GANN Trailing Stop Loss hit")
+            if is_winner
+                grand_btst_tp_all += 1
+                grand_btst_tp_pts_all += pts
+            else
+                grand_btst_sl_all += 1
+                grand_btst_sl_pts_all += pts
+    
+    float grand_total_pnl_all = grand_gann_pnl_all + grand_btst_pnl_all
+    float grand_gann_pts_all = grand_gann_pnl_all / (gann_option_multiplier * gann_lot_size)
+    float grand_btst_pts_all = grand_btst_pnl_all / (btst_option_multiplier * btst_lot_size)
+    float grand_combined_net_all = grand_gann_pts_all + grand_btst_pts_all
+    
+    int grand_total_tp_all = grand_gann_tp_all + grand_btst_tp_all
+    int grand_total_sl_all = grand_gann_sl_all + grand_btst_sl_all
+    float grand_win_rate_all = calculateWinRate(grand_total_tp_all, grand_total_sl_all)
+    
+    float grand_total_tp_pts_all = grand_gann_tp_pts_all + grand_btst_tp_pts_all
+    float grand_total_sl_pts_all = grand_gann_sl_pts_all + grand_btst_sl_pts_all
+    float grand_pf_all = grand_total_sl_pts_all > 0 ? math.round(grand_total_tp_pts_all / grand_total_sl_pts_all, 2) : (grand_total_tp_pts_all > 0 ? 999.99 : 0.0)
+    
+    table.cell(cmb_table, 0, total_row, 'TOTAL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 1, total_row, str.tostring(grand_gann_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 2, total_row, str.tostring(grand_gann_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 3, total_row, str.tostring(math.round(grand_gann_pts_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 4, total_row, str.tostring(grand_btst_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 5, total_row, str.tostring(grand_btst_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 6, total_row, str.tostring(math.round(grand_btst_pts_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 7, total_row, str.tostring(math.round(grand_combined_net_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 8, total_row, str.tostring(grand_win_rate_all) + "%", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 9, total_row, str.tostring(grand_pf_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 10, total_row, str.tostring(math.round(grand_gann_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 11, total_row, str.tostring(math.round(grand_btst_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 12, total_row, str.tostring(math.round(grand_total_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 13, total_row, str.tostring(grand_max_sl_streak), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 14, total_row, "₹" + str.tostring(math.round(grand_max_streak_loss)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 15, total_row, str.tostring(grand_max_days), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 16, total_row, "₹" + str.tostring(math.round(grand_max_loss)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    table.cell(cmb_table, 17, total_row, enable_market_structure ? "ON" : "OFF", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+    
+    int gann_row = cmb_performance_months + 2
+    float gann_wr = calculateWinRate(grand_gann_tp_all, grand_gann_sl_all)
+    
+    table.cell(cmb_table, 0, gann_row, 'GANN', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 60))
+    table.cell(cmb_table, 1, gann_row, 'TP:' + str.tostring(grand_gann_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 70))
+    table.cell(cmb_table, 2, gann_row, 'SL:' + str.tostring(grand_gann_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 70))
+    table.cell(cmb_table, 3, gann_row, 'WR:' + str.tostring(gann_wr) + "%", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 70))
+    table.cell(cmb_table, 4, gann_row, 'Enabled:' + (enable_gann ? "✓" : "✗"), text_color=color.white, text_size=size.normal, bgcolor=enable_gann ? color.new(color.green, 70) : color.new(color.red, 70))
+    table.cell(cmb_table, 5, gann_row, 'MS:' + (enable_market_structure ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=enable_market_structure ? color.new(color.blue, 70) : color.new(color.gray, 70))
+    
+    string gann_status = gann_TRADE_ACTIVE ? (gann_TRADE_DIR == 1 ? "LONG" : "SHORT") : "NO TRADE"
+    table.cell(cmb_table, 7, gann_row, 'Status:' + gann_status, text_color=color.white, text_size=size.normal, bgcolor=gann_TRADE_ACTIVE ? color.new(color.orange, 60) : color.new(color.gray, 70))
+    
+    int btst_row = cmb_performance_months + 3
+    float btst_wr = calculateWinRate(grand_btst_tp_all, grand_btst_sl_all)
+    
+    table.cell(cmb_table, 0, btst_row, 'BTST', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
+    table.cell(cmb_table, 1, btst_row, 'TP:' + str.tostring(grand_btst_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 70))
+    table.cell(cmb_table, 2, btst_row, 'SL:' + str.tostring(grand_btst_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 70))
+    table.cell(cmb_table, 3, btst_row, 'WR:' + str.tostring(btst_wr) + "%", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 70))
+    table.cell(cmb_table, 4, btst_row, 'Enabled:' + (enable_btst ? "✓" : "✗"), text_color=color.white, text_size=size.normal, bgcolor=enable_btst ? color.new(color.green, 70) : color.new(color.red, 70))
+    
+    string btst_status = btst_in_trade ? btst_current_trade_type : "NO TRADE"
+    table.cell(cmb_table, 5, btst_row, 'Status:' + btst_status, text_color=color.white, text_size=size.normal, bgcolor=btst_in_trade ? color.new(color.orange, 60) : color.new(color.gray, 70))
+    
+    int priority_row = cmb_performance_months + 4
+    table.cell(cmb_table, 0, priority_row, 'PRIORITY', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.gray, 60))
+    table.cell(cmb_table, 1, priority_row, trade_priority, text_color=color.white, text_size=size.normal, bgcolor=color.new(color.gray, 70))
+    table.cell(cmb_table, 2, priority_row, 'User:tradeskishor', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.navy, 70))
+    
+    int conf_row = cmb_performance_months + 5
+    table.cell(cmb_table, 0, conf_row, 'BTST CONF', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.orange, 60))
+    table.cell(cmb_table, 1, conf_row, 'VWAP:' + (btst_enable_vwap_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_vwap_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
+    table.cell(cmb_table, 2, conf_row, 'EMA:' + (btst_enable_ema_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_ema_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
+    table.cell(cmb_table, 3, conf_row, 'VOL:' + (btst_enable_volume_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_volume_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
