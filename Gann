@@ -267,6 +267,14 @@ gann_tsl_points_calculation = input.string("Entry Close to Exit Close", "Trailin
      options=["Entry Close to Exit Close", "Entry Close to Exit Wick", "Entry Close to Exit Level", "Entry Level to Exit Level"], 
      group=g_gann_points)
 
+
+
+
+
+gann_sl_reduction = input.float(0.0, "SL Distance Reduction", minval=0.0, maxval=1.0, step=0.01, group=g_gann_calc, 
+     tooltip="Reduce distance between entry and SL level\n0.0 = No reduction (original distance)\n0.25 = 25% closer\n0.50 = 50% closer (half distance)\n1.0 = SL at entry (no distance)")
+
+
 g_gann_exit = "🚪 GANN: Exit Settings"
 gann_exit_tp_target = input.string("TP3", "Exit at Target", options=["TP1", "TP2", "TP3", "TP4", "Trailing SL"], group=g_gann_exit)
 gann_enable_trailing_buffer = input.bool(true, "Enable Trailing SL Buffer", group=g_gann_exit)
@@ -275,6 +283,27 @@ gann_enable_eod_exit = input.bool(true, "Enable Weekly EOD Exit", group=g_gann_e
 gann_eod_day_of_week = input.string("Wednesday", "EOD Exit Day", options=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], group=g_gann_exit)
 gann_eod_hour = input.int(15,'Weekly EOD Hour',minval=0,maxval=23, group=g_gann_exit)
 gann_eod_minute = input.int(15,"Weekly EOD Minute",minval=0,maxval=59, group=g_gann_exit)
+
+
+
+
+
+
+// NEW: Level-by-Level Trailing Stops
+gann_enable_tp1_trailing = input.bool(true, "TP1 Hit → Move SL to Entry", group=g_gann_exit, 
+     tooltip="When price hits TP1, automatically move SL to entry level (breakeven)")
+gann_enable_tp2_trailing = input.bool(true, "TP2 Hit → Move SL to TP1", group=g_gann_exit,
+     tooltip="When price hits TP2, automatically move SL to TP1 level")
+gann_enable_tp3_trailing = input.bool(true, "TP3 Hit → Move SL to TP2", group=g_gann_exit,
+     tooltip="When price hits TP3, automatically move SL to TP2 level")
+gann_enable_tp4_trailing = input.bool(true, "TP4 Hit → Move SL to TP3", group=g_gann_exit,
+     tooltip="When price hits TP4, automatically move SL to TP3 level")
+
+
+
+
+
+
 
 g_gann_style = "🎨 GANN: Style Settings"
 gann_ShowBlvl = input.bool(false, "Show Buy Levels on Chart", group=g_gann_style)
@@ -614,8 +643,10 @@ if not gann_TRADE_ACTIVE and enable_gann
     if gann_buy_signal and f_can_gann_enter()
         gann_ENTRY_PRICE := gann_Bat
         gann_ENTRY_CLOSE_PRICE := close
-        gann_SL_PRICE := gann_Bsl
-        gann_CURRENT_SL := gann_Bsl
+        float original_sl_distance = gann_Bat - gann_Bsl
+        float reduced_sl_distance = original_sl_distance * (1 - gann_sl_reduction)
+        gann_SL_PRICE := gann_Bat - reduced_sl_distance
+        gann_CURRENT_SL := gann_SL_PRICE
         gann_TP_LEVEL1 := gann_Bt1
         gann_TP_LEVEL2 := gann_Bt2
         gann_TP_LEVEL3 := gann_Bt3
@@ -650,8 +681,10 @@ if not gann_TRADE_ACTIVE and enable_gann
     else if gann_sell_signal and f_can_gann_enter()
         gann_ENTRY_PRICE := gann_Sat
         gann_ENTRY_CLOSE_PRICE := close
-        gann_SL_PRICE := gann_Ssl
-        gann_CURRENT_SL := gann_Ssl
+        float original_sl_distance = gann_Ssl - gann_Sat
+        float reduced_sl_distance = original_sl_distance * (1 - gann_sl_reduction)
+        gann_SL_PRICE := gann_Sat + reduced_sl_distance
+        gann_CURRENT_SL := gann_SL_PRICE
         gann_TP_LEVEL1 := gann_St1
         gann_TP_LEVEL2 := gann_St2
         gann_TP_LEVEL3 := gann_St3
@@ -725,8 +758,9 @@ if not gann_TRADE_ACTIVE and enable_gann
                   textcolor=color.new(color.gray, 0), size=size.tiny)
 
 
+
 // ════════════════════════════════════════════════════════════════════
-// GANN SYSTEM - EXIT LOGIC
+// GANN SYSTEM - EXIT LOGIC (WITH LEVEL-BY-LEVEL TRAILING)
 // ════════════════════════════════════════════════════════════════════
 
 if gann_TRADE_ACTIVE
@@ -736,47 +770,61 @@ if gann_TRADE_ACTIVE
     var bool gann_TP4_HIT = false
     var bool gann_SL_HIT = false
 
-    if gann_TRADE_DIR == 1  // BUY
+    if gann_TRADE_DIR == 1  // BUY TRADE
+        
+        // Check TP4 Hit
         if f_gann_check_tp_hit_buy(gann_TP_LEVEL4) and not gann_TP4_HIT
             gann_TP4_HIT := true
             if not gann_ALERT_TP4_FIRED
                 gann_ALERT_TP4_FIRED := true
-            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 4
-                gann_HIGHEST_TP_REACHED := 4
-                float buffer = f_gann_get_trailing_buffer()
-                gann_CURRENT_SL := gann_TP_LEVEL3 - buffer
+            
+            // Move SL to TP3 if enabled
+            if gann_enable_tp4_trailing
+                gann_CURRENT_SL := gann_TP_LEVEL3
                 gann_IS_TRAILING_ACTIVE := true
-                
+                if gann_HIGHEST_TP_REACHED < 4
+                    gann_HIGHEST_TP_REACHED := 4
+        
+        // Check TP3 Hit
         if f_gann_check_tp_hit_buy(gann_TP_LEVEL3) and not gann_TP3_HIT
             gann_TP3_HIT := true
             if not gann_ALERT_TP3_FIRED
                 gann_ALERT_TP3_FIRED := true
-            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 3
-                gann_HIGHEST_TP_REACHED := 3
-                float buffer = f_gann_get_trailing_buffer()
-                gann_CURRENT_SL := gann_TP_LEVEL2 - buffer
+            
+            // Move SL to TP2 if enabled
+            if gann_enable_tp3_trailing
+                gann_CURRENT_SL := gann_TP_LEVEL2
                 gann_IS_TRAILING_ACTIVE := true
-                
+                if gann_HIGHEST_TP_REACHED < 3
+                    gann_HIGHEST_TP_REACHED := 3
+        
+        // Check TP2 Hit
         if f_gann_check_tp_hit_buy(gann_TP_LEVEL2) and not gann_TP2_HIT
             gann_TP2_HIT := true
             if not gann_ALERT_TP2_FIRED
                 gann_ALERT_TP2_FIRED := true
-            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 2
-                gann_HIGHEST_TP_REACHED := 2
-                float buffer = f_gann_get_trailing_buffer()
-                gann_CURRENT_SL := gann_TP_LEVEL1 - buffer
+            
+            // Move SL to TP1 if enabled
+            if gann_enable_tp2_trailing
+                gann_CURRENT_SL := gann_TP_LEVEL1
                 gann_IS_TRAILING_ACTIVE := true
-                
+                if gann_HIGHEST_TP_REACHED < 2
+                    gann_HIGHEST_TP_REACHED := 2
+        
+        // Check TP1 Hit
         if f_gann_check_tp_hit_buy(gann_TP_LEVEL1) and not gann_TP1_HIT
             gann_TP1_HIT := true
             if not gann_ALERT_TP1_FIRED
                 gann_ALERT_TP1_FIRED := true
-            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 1
-                gann_HIGHEST_TP_REACHED := 1
-                float buffer = f_gann_get_trailing_buffer()
-                gann_CURRENT_SL := gann_ENTRY_CLOSE_PRICE - buffer
+            
+            // Move SL to Entry (Breakeven) if enabled
+            if gann_enable_tp1_trailing
+                gann_CURRENT_SL := gann_ENTRY_PRICE
                 gann_IS_TRAILING_ACTIVE := true
+                if gann_HIGHEST_TP_REACHED < 1
+                    gann_HIGHEST_TP_REACHED := 1
         
+        // Check SL Hit
         if gann_IS_TRAILING_ACTIVE
             if f_gann_check_tsl_hit_buy(gann_CURRENT_SL)
                 gann_SL_HIT := true
@@ -784,6 +832,7 @@ if gann_TRADE_ACTIVE
             if f_gann_check_gann_sl_hit_buy(gann_CURRENT_SL)
                 gann_SL_HIT := true
 
+        // Exit Logic
         bool exit_here = false
         string exit_reason = ""
         float exit_price_used = na
@@ -793,11 +842,11 @@ if gann_TRADE_ACTIVE
         if gann_exit_tp_target == "Trailing SL"
             if gann_SL_HIT
                 gann_EXIT_PRICE := gann_CURRENT_SL
-                exit_reason := gann_HIGHEST_TP_REACHED > 0 ? "TSL" : "SL"
+                exit_reason := gann_IS_TRAILING_ACTIVE ? "TSL" : "SL"
                 exit_price_used := gann_CURRENT_SL
-                exit_color := gann_HIGHEST_TP_REACHED > 0 ? color.new(color.orange, 0) : gann_SLColor
+                exit_color := gann_IS_TRAILING_ACTIVE ? color.new(color.orange, 0) : gann_SLColor
                 exit_here := true
-                exit_type := gann_HIGHEST_TP_REACHED > 0 ? "TRAILING_SL" : "GANN_SL"
+                exit_type := gann_IS_TRAILING_ACTIVE ? "TRAILING_SL" : "GANN_SL"
                 if exit_reason == "TSL" and not gann_ALERT_TSL_FIRED
                     gann_ALERT_TSL_FIRED := true
                 else if exit_reason == "SL" and not gann_ALERT_SL_FIRED
@@ -839,13 +888,15 @@ if gann_TRADE_ACTIVE
                 exit_here := true
                 exit_type := "TP"
             else if gann_SL_HIT
-                gann_EXIT_PRICE := gann_SL_PRICE
-                exit_reason := "SL"
-                exit_price_used := gann_SL_PRICE
-                exit_color := gann_SLColor
+                gann_EXIT_PRICE := gann_CURRENT_SL
+                exit_reason := gann_IS_TRAILING_ACTIVE ? "TSL" : "SL"
+                exit_price_used := gann_CURRENT_SL
+                exit_color := gann_IS_TRAILING_ACTIVE ? color.new(color.orange, 0) : gann_SLColor
                 exit_here := true
-                exit_type := "GANN_SL"
-                if not gann_ALERT_SL_FIRED
+                exit_type := gann_IS_TRAILING_ACTIVE ? "TRAILING_SL" : "GANN_SL"
+                if exit_reason == "TSL" and not gann_ALERT_TSL_FIRED
+                    gann_ALERT_TSL_FIRED := true
+                else if exit_reason == "SL" and not gann_ALERT_SL_FIRED
                     gann_ALERT_SL_FIRED := true
             else if gann_is_eod_exit_time
                 gann_EXIT_PRICE := close
@@ -853,7 +904,7 @@ if gann_TRADE_ACTIVE
                 exit_price_used := close
                 exit_color := color.new(color.gray, 0)
                 exit_here := true
-                exit_type := "GANN_SL"
+                exit_type := gann_IS_TRAILING_ACTIVE ? "TRAILING_SL" : "GANN_SL"
 
         if exit_here
             float exit_wick_high = high
@@ -902,47 +953,61 @@ if gann_TRADE_ACTIVE
             gann_HIGHEST_TP_REACHED := 0
             gann_IS_TRAILING_ACTIVE := false
 
-    else if gann_TRADE_DIR == -1  // SELL
+    else if gann_TRADE_DIR == -1  // SELL TRADE
+        
+        // Check TP4 Hit
         if f_gann_check_tp_hit_sell(gann_TP_LEVEL4) and not gann_TP4_HIT
             gann_TP4_HIT := true
             if not gann_ALERT_TP4_FIRED
                 gann_ALERT_TP4_FIRED := true
-            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 4
-                gann_HIGHEST_TP_REACHED := 4
-                float buffer = f_gann_get_trailing_buffer()
-                gann_CURRENT_SL := gann_TP_LEVEL3 + buffer
+            
+            // Move SL to TP3 if enabled
+            if gann_enable_tp4_trailing
+                gann_CURRENT_SL := gann_TP_LEVEL3
                 gann_IS_TRAILING_ACTIVE := true
-                
+                if gann_HIGHEST_TP_REACHED < 4
+                    gann_HIGHEST_TP_REACHED := 4
+        
+        // Check TP3 Hit
         if f_gann_check_tp_hit_sell(gann_TP_LEVEL3) and not gann_TP3_HIT
             gann_TP3_HIT := true
             if not gann_ALERT_TP3_FIRED
                 gann_ALERT_TP3_FIRED := true
-            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 3
-                gann_HIGHEST_TP_REACHED := 3
-                float buffer = f_gann_get_trailing_buffer()
-                gann_CURRENT_SL := gann_TP_LEVEL2 + buffer
+            
+            // Move SL to TP2 if enabled
+            if gann_enable_tp3_trailing
+                gann_CURRENT_SL := gann_TP_LEVEL2
                 gann_IS_TRAILING_ACTIVE := true
-                
+                if gann_HIGHEST_TP_REACHED < 3
+                    gann_HIGHEST_TP_REACHED := 3
+        
+        // Check TP2 Hit
         if f_gann_check_tp_hit_sell(gann_TP_LEVEL2) and not gann_TP2_HIT
             gann_TP2_HIT := true
             if not gann_ALERT_TP2_FIRED
                 gann_ALERT_TP2_FIRED := true
-            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 2
-                gann_HIGHEST_TP_REACHED := 2
-                float buffer = f_gann_get_trailing_buffer()
-                gann_CURRENT_SL := gann_TP_LEVEL1 + buffer
+            
+            // Move SL to TP1 if enabled
+            if gann_enable_tp2_trailing
+                gann_CURRENT_SL := gann_TP_LEVEL1
                 gann_IS_TRAILING_ACTIVE := true
-                
+                if gann_HIGHEST_TP_REACHED < 2
+                    gann_HIGHEST_TP_REACHED := 2
+        
+        // Check TP1 Hit
         if f_gann_check_tp_hit_sell(gann_TP_LEVEL1) and not gann_TP1_HIT
             gann_TP1_HIT := true
             if not gann_ALERT_TP1_FIRED
                 gann_ALERT_TP1_FIRED := true
-            if gann_exit_tp_target == "Trailing SL" and gann_HIGHEST_TP_REACHED < 1
-                gann_HIGHEST_TP_REACHED := 1
-                float buffer = f_gann_get_trailing_buffer()
-                gann_CURRENT_SL := gann_ENTRY_CLOSE_PRICE + buffer
+            
+            // Move SL to Entry (Breakeven) if enabled
+            if gann_enable_tp1_trailing
+                gann_CURRENT_SL := gann_ENTRY_PRICE
                 gann_IS_TRAILING_ACTIVE := true
+                if gann_HIGHEST_TP_REACHED < 1
+                    gann_HIGHEST_TP_REACHED := 1
         
+        // Check SL Hit
         if gann_IS_TRAILING_ACTIVE
             if f_gann_check_tsl_hit_sell(gann_CURRENT_SL)
                 gann_SL_HIT := true
@@ -950,6 +1015,7 @@ if gann_TRADE_ACTIVE
             if f_gann_check_gann_sl_hit_sell(gann_CURRENT_SL)
                 gann_SL_HIT := true
 
+        // Exit Logic
         bool exit_here = false
         string exit_reason = ""
         float exit_price_used = na
@@ -959,11 +1025,11 @@ if gann_TRADE_ACTIVE
         if gann_exit_tp_target == "Trailing SL"
             if gann_SL_HIT
                 gann_EXIT_PRICE := gann_CURRENT_SL
-                exit_reason := gann_HIGHEST_TP_REACHED > 0 ? "TSL" : "SL"
+                exit_reason := gann_IS_TRAILING_ACTIVE ? "TSL" : "SL"
                 exit_price_used := gann_CURRENT_SL
-                exit_color := gann_HIGHEST_TP_REACHED > 0 ? color.new(color.orange, 0) : gann_SLColor
+                exit_color := gann_IS_TRAILING_ACTIVE ? color.new(color.orange, 0) : gann_SLColor
                 exit_here := true
-                exit_type := gann_HIGHEST_TP_REACHED > 0 ? "TRAILING_SL" : "GANN_SL"
+                exit_type := gann_IS_TRAILING_ACTIVE ? "TRAILING_SL" : "GANN_SL"
                 if exit_reason == "TSL" and not gann_ALERT_TSL_FIRED
                     gann_ALERT_TSL_FIRED := true
                 else if exit_reason == "SL" and not gann_ALERT_SL_FIRED
@@ -1005,13 +1071,15 @@ if gann_TRADE_ACTIVE
                 exit_here := true
                 exit_type := "TP"
             else if gann_SL_HIT
-                gann_EXIT_PRICE := gann_SL_PRICE
-                exit_reason := "SL"
-                exit_price_used := gann_SL_PRICE
-                exit_color := gann_SLColor
+                gann_EXIT_PRICE := gann_CURRENT_SL
+                exit_reason := gann_IS_TRAILING_ACTIVE ? "TSL" : "SL"
+                exit_price_used := gann_CURRENT_SL
+                exit_color := gann_IS_TRAILING_ACTIVE ? color.new(color.orange, 0) : gann_SLColor
                 exit_here := true
-                exit_type := "GANN_SL"
-                if not gann_ALERT_SL_FIRED
+                exit_type := gann_IS_TRAILING_ACTIVE ? "TRAILING_SL" : "GANN_SL"
+                if exit_reason == "TSL" and not gann_ALERT_TSL_FIRED
+                    gann_ALERT_TSL_FIRED := true
+                else if exit_reason == "SL" and not gann_ALERT_SL_FIRED
                     gann_ALERT_SL_FIRED := true
             else if gann_is_eod_exit_time
                 gann_EXIT_PRICE := close
@@ -1019,7 +1087,7 @@ if gann_TRADE_ACTIVE
                 exit_price_used := close
                 exit_color := color.new(color.gray, 0)
                 exit_here := true
-                exit_type := "GANN_SL"
+                exit_type := gann_IS_TRAILING_ACTIVE ? "TRAILING_SL" : "GANN_SL"
 
         if exit_here
             float exit_wick_high = high
@@ -1045,7 +1113,7 @@ if gann_TRADE_ACTIVE
             array.push(gann_trade_duration_days, days_in_trade)
             array.push(gann_trade_direction, -1)
             array.push(gann_trade_exit_type, exit_reason)
-
+            
             bool isTP = str.contains(exit_reason, "TP") or exit_reason == "TSL"
             float label_y = isTP ? f_gann_label_y_exit_tp_sell(gann_EXIT_PRICE) : f_gann_label_y_exit_sl_sell(gann_EXIT_PRICE)
             
@@ -1056,7 +1124,7 @@ if gann_TRADE_ACTIVE
             lbltxt := lbltxt + "\n" + str.tostring(days_in_trade) + "d"
             
             label.new(x=bar_index, y=label_y, text=lbltxt, 
-                      style=isTP ? label.style_label_up : label.style_label_down, 
+                      style=isTP ? label.style_label_down : label.style_label_up, 
                       textcolor=color.white, color=exit_color, size=size.small)
 
             gann_TRADE_ACTIVE := false
@@ -1067,6 +1135,9 @@ if gann_TRADE_ACTIVE
             gann_SL_HIT := false
             gann_HIGHEST_TP_REACHED := 0
             gann_IS_TRAILING_ACTIVE := false
+
+
+
 
 // ════════════════════════════════════════════════════════════════════
 // GANN SYSTEM - LEVEL PLOTTING
