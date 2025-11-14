@@ -7,9 +7,9 @@ indicator("Combined GANN + BTST Strategy with Market Structure & ATR Filter", ov
 
 g_system = "🎛️ System Control"
 enable_gann = input.bool(true, "Enable GANN System", group=g_system, tooltip="Enable/disable GANN intraday trading system")
-enable_btst = input.bool(true, "Enable BTST System", group=g_system, tooltip="Enable/disable BTST overnight trading system")
+
 trade_priority = input.string("Independent (Both Allowed)", "Trade Priority", 
-     options=["GANN Priority", "BTST Priority", "First Come First Serve", "Independent (Both Allowed)"], 
+     options=["GANN Priority", "First Come First Serve", "Independent (Both Allowed)"], 
      group=g_system, 
      tooltip="GANN Priority: BTST blocked if GANN active\nBTST Priority: GANN blocked if BTST active\nFirst Come: Second entry blocked\nIndependent: Both can trade simultaneously")
 
@@ -324,32 +324,7 @@ g_gann_perf = "📊 GANN: Performance Settings"
 gann_option_multiplier = input.float(0.6, "Option Multiplier", minval=0.0, maxval=10.0, step=0.1, group=g_gann_perf)
 gann_lot_size = input.float(300, "Lot Size", minval=1, maxval=100000, step=1, group=g_gann_perf)
 
-// ════════════════════════════════════════════════════════════════════
-// BTST SYSTEM SETTINGS
-// ════════════════════════════════════════════════════════════════════
 
-g_btst_confluence = "🔗 BTST: Confluence Settings"
-btst_enable_vwap_confluence = input.bool(true, "Enable VWAP Confluence Filter", group=g_btst_confluence, 
-     tooltip="Gap Up requires price above VWAP, Gap Down requires price below VWAP")
-btst_enable_ema_confluence = input.bool(true, "Enable EMA Confluence Filter", group=g_btst_confluence, 
-     tooltip="Gap Up requires price above EMA, Gap Down requires price below EMA")
-btst_ema_length = input.int(50, "EMA Length", minval=1, maxval=200, group=g_btst_confluence)
-btst_enable_volume_confluence = input.bool(true, "Enable Volume Confluence Filter", group=g_btst_confluence, 
-     tooltip="Requires volume to be above average by specified multiplier")
-btst_volume_length = input.int(18, "Volume Average Length", minval=1, maxval=200, group=g_btst_confluence)
-btst_volume_multiplier = input.float(1.3, "Volume Multiplier", minval=0.1, maxval=10.0, step=0.1, group=g_btst_confluence)
-
-g_btst_trading = "💰 BTST: Trading Settings"
-btst_target_percent = input.float(1.8, "Target %", minval=0.1, maxval=20.0, step=0.1, group=g_btst_trading)
-btst_sl_percent = input.float(1.5, "Stop Loss %", minval=0.1, maxval=20.0, step=0.1, group=g_btst_trading)
-
-g_btst_perf = "📊 BTST: Performance Settings"
-btst_option_multiplier = input.float(0.6, "Option Points Multiplier", minval=0.1, maxval=2.0, step=0.1, group=g_btst_perf)
-btst_lot_size = input.float(75, "Lot Size / PNL Multiplier", minval=1, maxval=10000, step=25, group=g_btst_perf)
-
-g_btst_style = "🎨 BTST: Style Settings"
-btst_show_vwap = input.bool(false, "Show VWAP on Chart", group=g_btst_style)
-btst_show_ema = input.bool(false, "Show EMA on Chart", group=g_btst_style)
 
 // ════════════════════════════════════════════════════════════════════
 // COMBINED PERFORMANCE TABLE SETTINGS
@@ -466,52 +441,7 @@ var array<int> gann_trade_duration_days = array.new_int()
 var array<int> gann_trade_direction = array.new_int()
 var array<string> gann_trade_exit_type = array.new_string()
 
-// ════════════════════════════════════════════════════════════════════
-// BTST SYSTEM - CALCULATIONS
-// ════════════════════════════════════════════════════════════════════
 
-float btst_vwap_value = ta.vwap(close)
-float btst_ema_value = ta.ema(close, btst_ema_length)
-float btst_avg_volume = ta.sma(volume, btst_volume_length)
-float btst_volume_threshold = btst_avg_volume * btst_volume_multiplier
-
-plot(btst_show_vwap and enable_btst ? btst_vwap_value : na, "BTST VWAP", color=color.new(color.orange, 0), linewidth=2)
-plot(btst_show_ema and enable_btst ? btst_ema_value : na, "BTST EMA", color=color.new(color.blue, 0), linewidth=2)
-
-// ════════════════════════════════════════════════════════════════════
-// BTST SYSTEM - TRADE STATE VARIABLES
-// ════════════════════════════════════════════════════════════════════
-
-var bool btst_in_trade = false
-var string btst_current_trade_type = ""
-var float btst_entry_price = 0.0
-var float btst_tp_price = 0.0
-var float btst_sl_price = 0.0
-var int btst_entry_bar = 0
-var int btst_entry_time = 0
-var line btst_tp_line = na
-var line btst_sl_line = na
-var label btst_tp_label = na
-var label btst_sl_label = na
-
-var array<int> btst_trade_months = array.new_int()
-var array<int> btst_trade_years = array.new_int()
-var array<bool> btst_trade_was_tp = array.new_bool()
-var array<float> btst_trade_points = array.new_float()
-var array<int> btst_trade_duration_bars = array.new_int()
-var array<string> btst_trade_type = array.new_string()
-
-var int btst_total_gapup_signals = 0
-var int btst_total_gapdown_signals = 0
-var int btst_filtered_gapup_vwap = 0
-var int btst_filtered_gapdown_vwap = 0
-var int btst_filtered_gapup_ema = 0
-var int btst_filtered_gapdown_ema = 0
-var int btst_filtered_gapup_volume = 0
-var int btst_filtered_gapdown_volume = 0
-
-var float btst_day_high = na
-var float btst_day_low = na
 
 // ════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
@@ -588,33 +518,6 @@ barsToDays(int bars) =>
     int days = math.max(1, math.round(bars / bars_per_day))
     days
 
-// ════════════════════════════════════════════════════════════════════
-// PRIORITY MANAGEMENT
-// ════════════════════════════════════════════════════════════════════
-
-f_can_gann_enter() =>
-    if not enable_gann
-        false
-    else if trade_priority == "Independent (Both Allowed)"
-        true
-    else if trade_priority == "GANN Priority"
-        true
-    else if trade_priority == "BTST Priority"
-        not btst_in_trade
-    else
-        not btst_in_trade
-
-f_can_btst_enter() =>
-    if not enable_btst
-        false
-    else if trade_priority == "Independent (Both Allowed)"
-        true
-    else if trade_priority == "BTST Priority"
-        true
-    else if trade_priority == "GANN Priority"
-        not gann_TRADE_ACTIVE
-    else
-        not gann_TRADE_ACTIVE
 
 // ════════════════════════════════════════════════════════════════════
 // GANN SYSTEM - EOD CHECK
@@ -640,7 +543,7 @@ bool gann_is_eod_exit_time = gann_enable_eod_exit and gann_is_eod_day and gann_c
 // ════════════════════════════════════════════════════════════════════
 
 if not gann_TRADE_ACTIVE and enable_gann
-    if gann_buy_signal and f_can_gann_enter()
+    if gann_buy_signal 
         gann_ENTRY_PRICE := gann_Bat
         gann_ENTRY_CLOSE_PRICE := close
         float original_sl_distance = gann_Bat - gann_Bsl
@@ -678,7 +581,7 @@ if not gann_TRADE_ACTIVE and enable_gann
         label.new(x=bar_index, y=f_gann_label_y_entry_buy(gann_Bat), text=label_text, 
                   style=label.style_label_up, color=gann_EntryBuyColor, textcolor=color.white, size=size.normal)
                   
-    else if gann_sell_signal and f_can_gann_enter()
+    else if gann_sell_signal
         gann_ENTRY_PRICE := gann_Sat
         gann_ENTRY_CLOSE_PRICE := close
         float original_sl_distance = gann_Ssl - gann_Sat
@@ -728,21 +631,7 @@ if not gann_TRADE_ACTIVE and enable_gann
                   text="GANN SELL\nWidth✗\n" + str.tostring(math.round(cpr_width, 1)) + " > " + str.tostring(gann_max_cpr_width), 
                   style=label.style_label_down, color=color.new(gann_EntrySellColor, 80), 
                   textcolor=color.new(color.gray, 0), size=size.tiny)
-    
-    // Priority blocking labels
-    else if ta.crossover(close, gann_Bat) and gann_cpr_confirms_buy and ms_allows_buy and gann_cpr_width_ok and enable_gann and not f_can_gann_enter()
-        string block_reason = trade_priority == "BTST Priority" ? "BTST Active" : "First Entry Active"
-        label.new(x=bar_index, y=f_gann_label_y_entry_buy(gann_Bat), 
-                  text="GANN BUY\nBlocked\n" + block_reason, 
-                  style=label.style_label_up, color=color.new(gann_EntryBuyColor, 80), 
-                  textcolor=color.new(color.gray, 0), size=size.small)
-    
-    else if ta.crossunder(close, gann_Sat) and gann_cpr_confirms_sell and ms_allows_sell and gann_cpr_width_ok and enable_gann and not f_can_gann_enter()
-        string block_reason = trade_priority == "BTST Priority" ? "BTST Active" : "First Entry Active"
-        label.new(x=bar_index, y=f_gann_label_y_entry_sell(gann_Sat), 
-                  text="GANN SELL\nBlocked\n" + block_reason, 
-                  style=label.style_label_down, color=color.new(gann_EntrySellColor, 80), 
-                  textcolor=color.new(color.gray, 0), size=size.small)
+
     
     // Market Structure rejection labels
     else if ta.crossover(close, gann_Bat) and gann_cpr_confirms_buy and gann_cpr_width_ok and enable_gann and not ms_allows_buy and enable_market_structure
@@ -1159,174 +1048,7 @@ plot(gann_ShowSlvl ? gann_Ssl : na, "GANN Sell SL", color=gann_SLColor, linewidt
 
 
 
-// ════════════════════════════════════════════════════════════════════
-// BTST SYSTEM - ENTRY LOGIC
-// ════════════════════════════════════════════════════════════════════
 
-bool is_new_day = ta.change(time('D')) != 0
-
-if is_new_day
-    btst_day_high := high
-    btst_day_low := low
-else
-    btst_day_high := math.max(nz(btst_day_high), high)
-    btst_day_low := math.min(nz(btst_day_low), low)
-
-float prev_day_close = request.security(syminfo.tickerid, 'D', close[1], lookahead=barmerge.lookahead_on)
-
-bool is_gap_up = is_new_day and open > prev_day_close
-bool is_gap_down = is_new_day and open < prev_day_close
-
-float gap_percent_up = is_gap_up ? ((open - prev_day_close) / prev_day_close) * 100 : 0
-float gap_percent_down = is_gap_down ? ((prev_day_close - open) / prev_day_close) * 100 : 0
-
-bool vwap_confirms_gapup = not btst_enable_vwap_confluence or close > btst_vwap_value
-bool vwap_confirms_gapdown = not btst_enable_vwap_confluence or close < btst_vwap_value
-
-bool ema_confirms_gapup = not btst_enable_ema_confluence or close > btst_ema_value
-bool ema_confirms_gapdown = not btst_enable_ema_confluence or close < btst_ema_value
-
-bool volume_confirms = not btst_enable_volume_confluence or volume >= btst_volume_threshold
-
-if is_gap_up
-    btst_total_gapup_signals += 1
-    if not vwap_confirms_gapup
-        btst_filtered_gapup_vwap += 1
-    if not ema_confirms_gapup
-        btst_filtered_gapup_ema += 1
-    if not volume_confirms
-        btst_filtered_gapup_volume += 1
-
-if is_gap_down
-    btst_total_gapdown_signals += 1
-    if not vwap_confirms_gapdown
-        btst_filtered_gapdown_vwap += 1
-    if not ema_confirms_gapdown
-        btst_filtered_gapdown_ema += 1
-    if not volume_confirms
-        btst_filtered_gapdown_volume += 1
-
-bool btst_gapup_entry = is_gap_up and vwap_confirms_gapup and ema_confirms_gapup and volume_confirms and f_can_btst_enter()
-bool btst_gapdown_entry = is_gap_down and vwap_confirms_gapdown and ema_confirms_gapdown and volume_confirms and f_can_btst_enter()
-
-if not btst_in_trade and enable_btst
-    if btst_gapup_entry
-        btst_in_trade := true
-        btst_current_trade_type := "Gap Up"
-        btst_entry_price := open
-        btst_tp_price := open * (1 + btst_target_percent / 100)
-        btst_sl_price := open * (1 - btst_sl_percent / 100)
-        btst_entry_bar := bar_index
-        btst_entry_time := time
-        
-        string label_text = "BTST GAP UP\n" + str.tostring(math.round(gap_percent_up, 2)) + "%"
-        if btst_enable_vwap_confluence
-            label_text := label_text + "\nVWAP✓"
-        if btst_enable_ema_confluence
-            label_text := label_text + "\nEMA✓"
-        if btst_enable_volume_confluence
-            label_text := label_text + "\nVOL✓"
-        
-        label.new(x=bar_index, y=low, text=label_text, 
-                  style=label.style_label_up, color=color.new(color.green, 0), 
-                  textcolor=color.white, size=size.normal)
-        
-        btst_tp_line := line.new(bar_index, btst_tp_price, bar_index + 1, btst_tp_price, 
-                                 color=color.new(color.green, 0), width=2, style=line.style_dashed)
-        btst_sl_line := line.new(bar_index, btst_sl_price, bar_index + 1, btst_sl_price, 
-                                 color=color.new(color.red, 0), width=2, style=line.style_dashed)
-        
-        btst_tp_label := label.new(bar_index, btst_tp_price, "TP: " + str.tostring(math.round(btst_tp_price, 2)), 
-                                   style=label.style_none, color=color.new(color.green, 100), 
-                                   textcolor=color.green, size=size.small)
-        btst_sl_label := label.new(bar_index, btst_sl_price, "SL: " + str.tostring(math.round(btst_sl_price, 2)), 
-                                   style=label.style_none, color=color.new(color.red, 100), 
-                                   textcolor=color.red, size=size.small)
-    
-    else if btst_gapdown_entry
-        btst_in_trade := true
-        btst_current_trade_type := "Gap Down"
-        btst_entry_price := open
-        btst_tp_price := open * (1 - btst_target_percent / 100)
-        btst_sl_price := open * (1 + btst_sl_percent / 100)
-        btst_entry_bar := bar_index
-        btst_entry_time := time
-        
-        string label_text = "BTST GAP DOWN\n" + str.tostring(math.round(gap_percent_down, 2)) + "%"
-        if btst_enable_vwap_confluence
-            label_text := label_text + "\nVWAP✓"
-        if btst_enable_ema_confluence
-            label_text := label_text + "\nEMA✓"
-        if btst_enable_volume_confluence
-            label_text := label_text + "\nVOL✓"
-        
-        label.new(x=bar_index, y=high, text=label_text, 
-                  style=label.style_label_down, color=color.new(color.red, 0), 
-                  textcolor=color.white, size=size.normal)
-        
-        btst_tp_line := line.new(bar_index, btst_tp_price, bar_index + 1, btst_tp_price, 
-                                 color=color.new(color.green, 0), width=2, style=line.style_dashed)
-        btst_sl_line := line.new(bar_index, btst_sl_price, bar_index + 1, btst_sl_price, 
-                                 color=color.new(color.red, 0), width=2, style=line.style_dashed)
-        
-        btst_tp_label := label.new(bar_index, btst_tp_price, "TP: " + str.tostring(math.round(btst_tp_price, 2)), 
-                                   style=label.style_none, color=color.new(color.green, 100), 
-                                   textcolor=color.green, size=size.small)
-        btst_sl_label := label.new(bar_index, btst_sl_price, "SL: " + str.tostring(math.round(btst_sl_price, 2)), 
-                                   style=label.style_none, color=color.new(color.red, 100), 
-                                   textcolor=color.red, size=size.small)
-
-// ════════════════════════════════════════════════════════════════════
-// BTST SYSTEM - EXIT LOGIC
-// ════════════════════════════════════════════════════════════════════
-
-if btst_in_trade
-    line.set_x2(btst_tp_line, bar_index)
-    line.set_x2(btst_sl_line, bar_index)
-    
-    bool tp_hit = false
-    bool sl_hit = false
-    
-    if btst_current_trade_type == "Gap Up"
-        tp_hit := high >= btst_tp_price
-        sl_hit := low <= btst_sl_price
-    else
-        tp_hit := low <= btst_tp_price
-        sl_hit := high >= btst_sl_price
-    
-    if tp_hit or sl_hit
-        float exit_price = tp_hit ? btst_tp_price : btst_sl_price
-        float points_made = btst_current_trade_type == "Gap Up" ? 
-                           (exit_price - btst_entry_price) : 
-                           (btst_entry_price - exit_price)
-        
-        bool is_winner = points_made > 0
-        int bars_in_trade = bar_index - btst_entry_bar
-        
-        array.push(btst_trade_months, month(time))
-        array.push(btst_trade_years, year(time))
-        array.push(btst_trade_was_tp, is_winner)
-        array.push(btst_trade_points, math.abs(points_made))
-        array.push(btst_trade_duration_bars, bars_in_trade)
-        array.push(btst_trade_type, btst_current_trade_type)
-        
-        string exit_text = (tp_hit ? "TP HIT" : "SL HIT") + "\n" + 
-                          (is_winner ? "+" : "-") + str.tostring(math.round(math.abs(points_made), 2))
-        
-        label.new(x=bar_index, 
-                  y=btst_current_trade_type == "Gap Up" ? high : low, 
-                  text=exit_text, 
-                  style=btst_current_trade_type == "Gap Up" ? label.style_label_down : label.style_label_up, 
-                  color=tp_hit ? color.new(color.green, 0) : color.new(color.red, 0), 
-                  textcolor=color.white, size=size.normal)
-        
-        line.delete(btst_tp_line)
-        line.delete(btst_sl_line)
-        label.delete(btst_tp_label)
-        label.delete(btst_sl_label)
-        
-        btst_in_trade := false
-        btst_current_trade_type := ""
 
 // ═════════════════════════════════════════════════════════════════════════════
 // COMBINED PERFORMANCE TABLE WITH SL STREAK TRACKING
@@ -1389,12 +1111,7 @@ calculateMonthSLStreak(int target_month, int target_year) =>
                 array.push(all_trades_timestamp, i * 2)
                 array.push(all_trades_loss_amount, loss_amt)
     
-    if array.size(btst_trade_months) > 0
-        for i = 0 to array.size(btst_trade_months) - 1
-            if array.get(btst_trade_months, i) == target_month and array.get(btst_trade_years, i) == target_year
-                bool was_tp = array.get(btst_trade_was_tp, i)
-                float pts = array.get(btst_trade_points, i)
-                float loss_amt = pts * btst_option_multiplier * btst_lot_size
+
                 
                 array.push(all_trades_tp, was_tp)
                 array.push(all_trades_pts, pts)
@@ -1468,20 +1185,7 @@ calculateGlobalMaxSLStreak() =>
             array.push(all_trades_loss_amount, loss_amt)
             array.push(all_trades_system, "GANN")
     
-    if array.size(btst_trade_months) > 0
-        for i = 0 to array.size(btst_trade_months) - 1
-            bool was_tp = array.get(btst_trade_was_tp, i)
-            float pts = array.get(btst_trade_points, i)
-            float loss_amt = pts * btst_option_multiplier * btst_lot_size
-            int month_val = array.get(btst_trade_months, i)
-            int year_val = array.get(btst_trade_years, i)
-            
-            array.push(all_trades_tp, was_tp)
-            array.push(all_trades_month, month_val)
-            array.push(all_trades_year, year_val)
-            array.push(all_trades_index, i + 10000)
-            array.push(all_trades_loss_amount, loss_amt)
-            array.push(all_trades_system, "BTST")
+
     
     int n = array.size(all_trades_month)
     if n > 1
@@ -1613,33 +1317,7 @@ if barstate.islast and cmb_show_performance_table
                         if loss_amt > gann_max_loss
                             gann_max_loss := loss_amt
         
-        int btst_tp = 0
-        int btst_sl = 0
-        float btst_tp_pts = 0.0
-        float btst_sl_pts = 0.0
-        int btst_max_days = 0
-        float btst_max_loss = 0.0
-        
-        if array.size(btst_trade_months) > 0
-            for j = 0 to array.size(btst_trade_months) - 1
-                if array.get(btst_trade_months, j) == target_month and array.get(btst_trade_years, j) == target_year
-                    bool was_tp = array.get(btst_trade_was_tp, j)
-                    float pts = array.get(btst_trade_points, j)
-                    int bars = array.get(btst_trade_duration_bars, j)
-                    int days = barsToDays(bars)
-                    
-                    if days > btst_max_days
-                        btst_max_days := days
-                    
-                    if was_tp
-                        btst_tp += 1
-                        btst_tp_pts += pts
-                    else
-                        btst_sl += 1
-                        btst_sl_pts += pts
-                        float loss_amt = pts * btst_option_multiplier * btst_lot_size
-                        if loss_amt > btst_max_loss
-                            btst_max_loss := loss_amt
+
         
         [month_sl_streak, month_streak_loss] = calculateMonthSLStreak(target_month, target_year)
         
@@ -1648,23 +1326,22 @@ if barstate.islast and cmb_show_performance_table
             grand_max_streak_loss := month_streak_loss
         
         float gann_net = gann_tp_pts - gann_sl_pts
-        float btst_net = btst_tp_pts - btst_sl_pts
-        float combined_net = gann_net + btst_net
+
+        float combined_net = gann_net 
         
-        int total_tp = gann_tp + btst_tp
-        int total_sl = gann_sl + btst_sl
-        float total_tp_pts = gann_tp_pts + btst_tp_pts
-        float total_sl_pts = gann_sl_pts + btst_sl_pts
+        int total_tp = gann_tp 
+        int total_sl = gann_sl 
+        float total_tp_pts = gann_tp_pts 
+        float total_sl_pts = gann_sl_pts 
         
         float win_rate = calculateWinRate(total_tp, total_sl)
         float pf = total_sl_pts > 0 ? math.round(total_tp_pts / total_sl_pts, 2) : (total_tp_pts > 0 ? 999.99 : 0.0)
         
         float gann_pnl = math.round(gann_net * gann_option_multiplier * gann_lot_size)
-        float btst_pnl = math.round(btst_net * btst_option_multiplier * btst_lot_size)
-        float total_pnl = gann_pnl + btst_pnl
+        float total_pnl = gann_pnl 
         
-        int max_days = math.max(gann_max_days, btst_max_days)
-        float max_loss = math.max(gann_max_loss, btst_max_loss)
+        int max_days = math.max(gann_max_days)
+        float max_loss = math.max(gann_max_loss)
         
         if max_days > grand_max_days
             grand_max_days := max_days
@@ -1677,14 +1354,12 @@ if barstate.islast and cmb_show_performance_table
         table.cell(cmb_table, 1, row, str.tostring(gann_tp), text_color=color.white, text_size=size.normal)
         table.cell(cmb_table, 2, row, str.tostring(gann_sl), text_color=color.white, text_size=size.normal)
         table.cell(cmb_table, 3, row, str.tostring(math.round(gann_net)), text_color=color.white, text_size=size.normal, bgcolor=gann_net >= 0 ? color.new(color.green, 85) : color.new(color.red, 85))
-        table.cell(cmb_table, 4, row, str.tostring(btst_tp), text_color=color.white, text_size=size.normal)
-        table.cell(cmb_table, 5, row, str.tostring(btst_sl), text_color=color.white, text_size=size.normal)
-        table.cell(cmb_table, 6, row, str.tostring(math.round(btst_net)), text_color=color.white, text_size=size.normal, bgcolor=btst_net >= 0 ? color.new(color.green, 85) : color.new(color.red, 85))
+
         table.cell(cmb_table, 7, row, str.tostring(math.round(combined_net)), text_color=color.white, text_size=size.normal, bgcolor=combined_net >= 0 ? color.new(color.green, 80) : color.new(color.red, 80))
         table.cell(cmb_table, 8, row, str.tostring(win_rate) + "%", text_color=color.white, text_size=size.normal)
         table.cell(cmb_table, 9, row, str.tostring(pf), text_color=color.white, text_size=size.normal)
         table.cell(cmb_table, 10, row, str.tostring(math.round(gann_pnl)), text_color=color.white, text_size=size.normal)
-        table.cell(cmb_table, 11, row, str.tostring(math.round(btst_pnl)), text_color=color.white, text_size=size.normal)
+
         table.cell(cmb_table, 12, row, str.tostring(math.round(total_pnl)), text_color=color.white, text_size=size.normal, bgcolor=total_pnl >= 0 ? color.new(color.green, 80) : color.new(color.red, 80))
         table.cell(cmb_table, 13, row, month_sl_streak > 0 ? str.tostring(month_sl_streak) : "-", text_color=color.white, text_size=size.normal, bgcolor=month_sl_streak >= 3 ? color.new(color.red, 80) : color.new(color.gray, 90))
         table.cell(cmb_table, 14, row, month_sl_streak > 0 ? "₹" + str.tostring(math.round(month_streak_loss)) : "-", text_color=color.white, text_size=size.normal, bgcolor=month_streak_loss > 50000 ? color.new(color.red, 80) : color.new(color.gray, 90))
@@ -1720,51 +1395,33 @@ if barstate.islast and cmb_show_performance_table
                 grand_gann_sl_all += 1
                 grand_gann_sl_pts_all += pts
     
-    float grand_btst_pnl_all = 0.0
-    int grand_btst_tp_all = 0
-    int grand_btst_sl_all = 0
-    float grand_btst_tp_pts_all = 0.0
-    float grand_btst_sl_pts_all = 0.0
+
     
-    if array.size(btst_trade_points) > 0
-        for j = 0 to array.size(btst_trade_points) - 1
-            float pts = array.get(btst_trade_points, j)
-            bool is_winner = array.get(btst_trade_was_tp, j)
-            float signed_pts = is_winner ? pts : -pts
-            grand_btst_pnl_all += signed_pts * btst_option_multiplier * btst_lot_size
-            
-            if is_winner
-                grand_btst_tp_all += 1
-                grand_btst_tp_pts_all += pts
-            else
-                grand_btst_sl_all += 1
-                grand_btst_sl_pts_all += pts
+
     
-    float grand_total_pnl_all = grand_gann_pnl_all + grand_btst_pnl_all
+    float grand_total_pnl_all = grand_gann_pnl_all
     float grand_gann_pts_all = grand_gann_pnl_all / (gann_option_multiplier * gann_lot_size)
-    float grand_btst_pts_all = grand_btst_pnl_all / (btst_option_multiplier * btst_lot_size)
-    float grand_combined_net_all = grand_gann_pts_all + grand_btst_pts_all
+
+    float grand_combined_net_all = grand_gann_pts_all 
     
-    int grand_total_tp_all = grand_gann_tp_all + grand_btst_tp_all
-    int grand_total_sl_all = grand_gann_sl_all + grand_btst_sl_all
+    int grand_total_tp_all = grand_gann_tp_all 
+    int grand_total_sl_all = grand_gann_sl_all 
     float grand_win_rate_all = calculateWinRate(grand_total_tp_all, grand_total_sl_all)
     
-    float grand_total_tp_pts_all = grand_gann_tp_pts_all + grand_btst_tp_pts_all
-    float grand_total_sl_pts_all = grand_gann_sl_pts_all + grand_btst_sl_pts_all
+    float grand_total_tp_pts_all = grand_gann_tp_pts_all 
+    float grand_total_sl_pts_all = grand_gann_sl_pts_all
     float grand_pf_all = grand_total_sl_pts_all > 0 ? math.round(grand_total_tp_pts_all / grand_total_sl_pts_all, 2) : (grand_total_tp_pts_all > 0 ? 999.99 : 0.0)
     
     table.cell(cmb_table, 0, total_row, 'TOTAL', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
     table.cell(cmb_table, 1, total_row, str.tostring(grand_gann_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
     table.cell(cmb_table, 2, total_row, str.tostring(grand_gann_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
     table.cell(cmb_table, 3, total_row, str.tostring(math.round(grand_gann_pts_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
-    table.cell(cmb_table, 4, total_row, str.tostring(grand_btst_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
-    table.cell(cmb_table, 5, total_row, str.tostring(grand_btst_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
-    table.cell(cmb_table, 6, total_row, str.tostring(math.round(grand_btst_pts_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+
     table.cell(cmb_table, 7, total_row, str.tostring(math.round(grand_combined_net_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
     table.cell(cmb_table, 8, total_row, str.tostring(grand_win_rate_all) + "%", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
     table.cell(cmb_table, 9, total_row, str.tostring(grand_pf_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
     table.cell(cmb_table, 10, total_row, str.tostring(math.round(grand_gann_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
-    table.cell(cmb_table, 11, total_row, str.tostring(math.round(grand_btst_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
+
     table.cell(cmb_table, 12, total_row, str.tostring(math.round(grand_total_pnl_all)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
     table.cell(cmb_table, 13, total_row, str.tostring(grand_max_sl_streak), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
     table.cell(cmb_table, 14, total_row, "₹" + str.tostring(math.round(grand_max_streak_loss)), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.purple, 60))
@@ -1785,17 +1442,9 @@ if barstate.islast and cmb_show_performance_table
     string gann_status = gann_TRADE_ACTIVE ? (gann_TRADE_DIR == 1 ? "LONG" : "SHORT") : "NO TRADE"
     table.cell(cmb_table, 7, gann_row, 'Status:' + gann_status, text_color=color.white, text_size=size.normal, bgcolor=gann_TRADE_ACTIVE ? color.new(color.orange, 60) : color.new(color.gray, 70))
     
-    int btst_row = cmb_performance_months + 3
-    float btst_wr = calculateWinRate(grand_btst_tp_all, grand_btst_sl_all)
+
     
-    table.cell(cmb_table, 0, btst_row, 'BTST', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 60))
-    table.cell(cmb_table, 1, btst_row, 'TP:' + str.tostring(grand_btst_tp_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.green, 70))
-    table.cell(cmb_table, 2, btst_row, 'SL:' + str.tostring(grand_btst_sl_all), text_color=color.white, text_size=size.normal, bgcolor=color.new(color.red, 70))
-    table.cell(cmb_table, 3, btst_row, 'WR:' + str.tostring(btst_wr) + "%", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.blue, 70))
-    table.cell(cmb_table, 4, btst_row, 'Enabled:' + (enable_btst ? "✓" : "✗"), text_color=color.white, text_size=size.normal, bgcolor=enable_btst ? color.new(color.green, 70) : color.new(color.red, 70))
-    
-    string btst_status = btst_in_trade ? btst_current_trade_type : "NO TRADE"
-    table.cell(cmb_table, 5, btst_row, 'Status:' + btst_status, text_color=color.white, text_size=size.normal, bgcolor=btst_in_trade ? color.new(color.orange, 60) : color.new(color.gray, 70))
+
     
     int priority_row = cmb_performance_months + 4
     table.cell(cmb_table, 0, priority_row, 'PRIORITY', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.gray, 60))
@@ -1803,7 +1452,4 @@ if barstate.islast and cmb_show_performance_table
     table.cell(cmb_table, 2, priority_row, 'User:tradeskishor', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.navy, 70))
     
     int conf_row = cmb_performance_months + 5
-    table.cell(cmb_table, 0, conf_row, 'BTST CONF', text_color=color.white, text_size=size.normal, bgcolor=color.new(color.orange, 60))
-    table.cell(cmb_table, 1, conf_row, 'VWAP:' + (btst_enable_vwap_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_vwap_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
-    table.cell(cmb_table, 2, conf_row, 'EMA:' + (btst_enable_ema_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_ema_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
-    table.cell(cmb_table, 3, conf_row, 'VOL:' + (btst_enable_volume_confluence ? "ON" : "OFF"), text_color=color.white, text_size=size.normal, bgcolor=btst_enable_volume_confluence ? color.new(color.green, 70) : color.new(color.red, 70))
+ 
